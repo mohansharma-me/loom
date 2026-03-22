@@ -23,6 +23,17 @@ Repo: https://github.com/mohansharma-me/loom
 - PRs reference issues via `Fixes #N` or `Closes #N`.
 - Do not close issues/PRs without explicit user approval.
 
+### 4. Post Plans as Sub-Issues
+
+- Every plan (design or implementation) MUST be tracked as a **sub-issue** on the target GitHub issue.
+- Create up to two sub-issues per work issue:
+  - **`Design Plan: <parent title>`** — design spec, architecture, decisions.
+  - **`Implementation Plan: <parent title>`** — step-by-step execution plan.
+- Plan content goes in `.github/plans/<issue-number>-<design|implementation>.md` in the repo.
+- The sub-issue body contains a summary and links to the full spec file.
+- Plan file updates are committed alongside the implementation work.
+- **Do NOT read files in `.github/plans/` during codebase exploration.** Only read a plan file when explicitly working on the corresponding issue.
+
 ## Key Files
 
 | File | Purpose |
@@ -35,10 +46,11 @@ Repo: https://github.com/mohansharma-me/loom
 ## Workflow
 
 1. Check/create GitHub issue
-2. Branch from `main` (`feature/`, `fix/`, `docs/`)
-3. Implement with `ASSUMPTION:` comments in code
-4. Update `ROADMAP.md` if a roadmap item was completed
-5. Commit referencing the issue, open PR with `Fixes #N`
+2. Create sub-issues for Design Plan and/or Implementation Plan (store in `.github/plans/`)
+3. Branch from `main` (`feature/`, `fix/`, `docs/`)
+4. Implement with `ASSUMPTION:` comments in code
+5. Update `ROADMAP.md` if a roadmap item was completed
+6. Commit referencing the issue, open PR with `Fixes #N`
 
 ## Constraints
 
