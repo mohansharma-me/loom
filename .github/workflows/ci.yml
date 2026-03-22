@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      # Ensure .github/ changes (e.g. workflow files) always trigger CI
+      - '!.github/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      # Ensure .github/ changes (e.g. workflow files) always trigger CI
+      - '!.github/**'
+
+permissions:
+  contents: read
+
+env:
+  OTP_VERSION: '27'
+  REBAR3_VERSION: '3.24'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Erlang/OTP
+        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764  # v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Restore cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-otp${{ env.OTP_VERSION }}-${{ hashFiles('rebar.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-otp${{ env.OTP_VERSION }}-
+
+      - name: Compile
+        run: rebar3 compile
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Erlang/OTP
+        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764  # v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Restore cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-otp${{ env.OTP_VERSION }}-${{ hashFiles('rebar.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-otp${{ env.OTP_VERSION }}-
+
+      - name: EUnit
+        run: rebar3 eunit
+
+      - name: Common Test
+        run: rebar3 ct --verbose
+
+  analysis:
+    name: Analysis
+    runs-on: ubuntu-24.04
+    needs: build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Erlang/OTP
+        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764  # v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Restore cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-otp${{ env.OTP_VERSION }}-${{ hashFiles('rebar.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-otp${{ env.OTP_VERSION }}-
+
+      - name: Dialyzer
+        run: rebar3 dialyzer
+
+      - name: Xref
+        run: rebar3 xref

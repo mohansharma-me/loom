@@ -1,4 +1,5 @@
 # Loom
+[![CI](https://github.com/mohansharma-me/loom/actions/workflows/ci.yml/badge.svg)](https://github.com/mohansharma-me/loom/actions/workflows/ci.yml)
 
 **Fault-tolerant inference orchestration, woven on BEAM.**
 
