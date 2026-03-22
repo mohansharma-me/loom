@@ -1,0 +1,6 @@
+-name loom@127.0.0.1
+-setcookie loom_dev_cookie
++K true
++A 30
++P 1048576
++Q 1048576
