@@ -3,9 +3,7 @@
 
 -export([start/2, stop/1]).
 
-%% ASSUMPTION: Return type includes {ok, pid(), term()} for behaviour compliance
-%% but loom_sup:start_link/0 will only return {ok, pid()} | ignore | {error, term()}.
--spec start(application:start_type(), term()) -> {ok, pid()} | {ok, pid(), term()}.
+-spec start(application:start_type(), term()) -> {ok, pid()} | ignore | {error, term()}.
 start(_StartType, _StartArgs) ->
     loom_sup:start_link().
 
