@@ -1,0 +1,17 @@
+{application, loom, [
+    {description, "Fault-tolerant inference orchestration on Erlang/OTP"},
+    {vsn, "0.1.0"},
+    {registered, [loom_sup]},
+    {mod, {loom_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        sasl,
+        cowboy,
+        prometheus
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/mohansharma-me/loom"}]}
+]}.
