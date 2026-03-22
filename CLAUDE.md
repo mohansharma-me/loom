@@ -32,7 +32,7 @@ Repo: https://github.com/mohansharma-me/loom
 - Plan content goes in `.github/plans/<issue-number>-<design|implementation>.md` in the repo.
 - The sub-issue body contains a summary and links to the full spec file.
 - Plan file updates are committed alongside the implementation work.
-- **Do NOT read files in `.github/plans/` during codebase exploration.** Only read a plan file when explicitly working on the corresponding issue.
+- **Do NOT read `.github/plans/` during general codebase exploration.** Only read a plan file when the current task is scoped to its parent issue. When working on an issue, reading and updating its plan files is expected.
 
 ## Key Files
 
