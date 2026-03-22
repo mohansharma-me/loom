@@ -6,12 +6,14 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      # Ensure .github/ changes (e.g. workflow files) always trigger CI
       - '!.github/**'
   pull_request:
     branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      # Ensure .github/ changes (e.g. workflow files) always trigger CI
       - '!.github/**'
 
 permissions:
@@ -21,21 +23,25 @@ env:
   OTP_VERSION: '27'
   REBAR3_VERSION: '3.24'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Erlang/OTP
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764  # v1
         with:
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
 
       - name: Restore cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: |
             _build
@@ -52,16 +58,16 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Erlang/OTP
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764  # v1
         with:
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
 
       - name: Restore cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: |
             _build
@@ -80,17 +86,18 @@ jobs:
     name: Analysis
     runs-on: ubuntu-24.04
     needs: build
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Erlang/OTP
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764  # v1
         with:
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
 
       - name: Restore cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
         with:
           path: |
             _build
