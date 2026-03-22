@@ -477,57 +477,9 @@ Key disadvantage: ecosystem maturity. Loom is new. vLLM/Kubernetes/Ray are battl
 
 ## 9. Roadmap
 
-### Phase 0: Foundation & Proof of Concept
-Validate core thesis: BEAM manages vLLM via Port with crash recovery.
-- Project bootstrapping (rebar3, CI, dev environment)
-- loom_port — Port communication managing single vLLM subprocess
-- loom_adapter.py — Python adapter wrapping vLLM's AsyncLLMEngine
-- Line-delimited JSON message protocol
-- Basic supervisor tree (loom_engine_sup with coordinator + GPU monitor)
-- OpenAI-compatible /v1/chat/completions API with SSE streaming (cowboy)
-- Validation: kill vLLM mid-request → auto-restart → system recovers
-- Port overhead benchmark (target: <1ms per message)
+See **[ROADMAP.md](ROADMAP.md)** for detailed phase-wise progress with GitHub issue links and status tracking.
 
-### Phase 1: Multi-Engine & Routing
-Multiple engines with intelligent routing — the GPT-5 router pattern.
-- loom_engine_pool_sup — N engine supervisors under pool supervisor
-- loom_registry — ETS-backed model→engine mapping
-- loom_adapter_trt.py — TensorRT-LLM adapter (same protocol)
-- loom_router — pluggable routing with strategy behaviour
-- Built-in strategies: model-match, capability-based, load-balanced, cascade, priority
-- Per-engine bounded queues, global backpressure
-- loom_metrics — telemetry (queue depth, throughput, latency histograms)
-- Observability dashboard (Prometheus/Grafana or built-in WebSocket UI)
-
-### Phase 2: Dynamic Capacity Management
-Runtime topology changes without system restart.
-- Admin API for engine lifecycle (start, drain, stop, swap model, activate)
-- Drain protocol (stop routing → wait for in-flight → shutdown → free GPU)
-- loom_planner — topology recommendations based on load signals
-- Hot configuration updates (routing strategy, queue limits, thresholds)
-- loom_kv_accountant — GPU memory budget tracking for routing decisions
-
-### Phase 3: Multi-Node Distribution
-Loom cluster spanning multiple physical nodes.
-- Cluster formation with node discovery (static → DNS-based)
-- Global engine registration via pg process groups
-- Cross-node routing with locality preference
-- Node failure detection and automatic reroute
-- Split-brain protection (quorum-based)
-
-### Phase 4: Production Hardening
-- gRPC migration (multiplexed, Protobuf) — Port retained for lifecycle
-- Prefix-cache-aware and context-length-aware routing
-- A/B and canary routing (weighted traffic split)
-- Multi-tenancy (API key auth, per-tenant rate limiting, isolation)
-- Topology persistence (survive full cluster restart)
-- Load test: 10K concurrent connections
-
-### Phase 5: Ecosystem & Community
-- Open-source release, documentation, guides
-- Docker images, Helm charts, Terraform modules
-- LiteLLM / LangChain / LlamaIndex integrations
-- Pre-built Prometheus + Grafana dashboards
+Phases at a glance: Phase 0 (Foundation & PoC) → Phase 1 (Multi-Engine & Routing) → Phase 2 (Dynamic Capacity) → Phase 3 (Multi-Node) → Phase 4 (Production Hardening) → Phase 5 (Ecosystem & Community).
 
 ---
 
