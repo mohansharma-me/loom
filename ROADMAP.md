@@ -22,7 +22,7 @@ Standards and practices that apply across all phases.
 > Validate the core thesis: BEAM can manage a vLLM process via Port with zero-downtime crash recovery.
 
 ### Project Bootstrapping
-- [ ] Initialize rebar3 project with OTP application layout — [#1](https://github.com/mohansharma-me/loom/issues/1) `P0-01`
+- [x] Initialize rebar3 project with OTP application layout — [#1](https://github.com/mohansharma-me/loom/issues/1) `P0-01`
 - [ ] Set up GitHub Actions CI (build, test, Dialyzer) — [#2](https://github.com/mohansharma-me/loom/issues/2) `P0-02`
 - [ ] Dev environment with Docker Compose and docs — [#3](https://github.com/mohansharma-me/loom/issues/3) `P0-03`
 
@@ -129,19 +129,19 @@ Standards and practices that apply across all phases.
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 3 | 0 | 0 | 3 |
-| Phase 0 | 15 | 0 | 0 | 15 |
+| Phase 0 | 15 | 1 | 0 | 14 |
 | Phase 1 | 11 | 0 | 0 | 11 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **50** | **0** | **0** | **50** |
+| **Total** | **50** | **1** | **0** | **49** |
 
 ## What's Next
 
 Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 
-1. **#1 — P0-01:** Initialize rebar3 project (unblocks everything)
+1. ~~**#1 — P0-01:** Initialize rebar3 project (unblocks everything)~~ ✓
 2. **#2 — P0-02:** CI pipeline (enables quality gates early)
 3. **#3 — P0-03:** Dev environment (enables local iteration)
 4. **#4 — P0-04:** JSON wire protocol (defines the BEAM↔Python contract)

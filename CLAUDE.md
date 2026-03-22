@@ -16,6 +16,7 @@ Repo: https://github.com/mohansharma-me/loom
 - Mark `[x]` on completed items. Update the Progress Summary table.
 - Add new items under the correct phase with a GitHub issue link.
 - Roadmap updates go in the same commit/PR that completes the work.
+- **Before opening a PR**, verify that `ROADMAP.md` has been updated if any roadmap item was completed. This is a blocking requirement — do not open the PR without it.
 
 ### 3. Use GitHub Issues for All Work
 
