@@ -60,8 +60,8 @@ loom/
 ]}.
 
 {deps, [
-    {cowboy, "2.12.0"},
-    {prometheus, "4.11.0"}
+    {cowboy, "2.14.2"},
+    {prometheus, "6.1.2"}
 ]}.
 
 {relx, [
@@ -131,7 +131,7 @@ loom/
 
 -export([start/2, stop/1]).
 
--spec start(application:start_type(), term()) -> {ok, pid()} | {ok, pid(), term()}.
+-spec start(application:start_type(), term()) -> {ok, pid()} | ignore | {error, term()}.
 start(_StartType, _StartArgs) ->
     loom_sup:start_link().
 
@@ -173,15 +173,30 @@ init([]) ->
 
 -export([encode/1, decode/1]).
 
--spec encode(term()) -> binary().
+-export_type([json_value/0, json_encodable/0]).
+
+-type json_value() :: null | boolean() | number() | binary()
+                    | [json_value()]
+                    | #{binary() => json_value()}.
+
+-type json_encodable() :: atom() | binary() | number()
+                        | [json_encodable()]
+                        | #{atom() | binary() | integer() => json_encodable()}.
+
+%% @doc Encode an Erlang term to a JSON binary.
+-spec encode(json_encodable()) -> binary().
 encode(Term) ->
     iolist_to_binary(json:encode(Term)).
 
--spec decode(binary()) -> term().
+%% @doc Decode a JSON binary to an Erlang term.
+%% ASSUMPTION: Returns maps with binary keys for all JSON objects.
+%% This avoids atom table exhaustion from untrusted external input.
+-spec decode(binary()) -> json_value().
 decode(Binary) ->
     json:decode(Binary).
 ```
 
+- Exported types `json_value/0` and `json_encodable/0` document the JSON contract precisely, satisfying dialyzer `underspecs` checks.
 - `encode/1` returns `binary()` (not `iodata()`) for simplicity at the wire protocol level.
 - `decode/1` returns maps with binary keys — avoids atom table exhaustion from external input.
 - Will grow as needed (error handling, custom encoders) but starts minimal.
