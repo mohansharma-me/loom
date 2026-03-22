@@ -8,7 +8,7 @@
 
 **Tech Stack:** GitHub Actions, `erlef/setup-beam`, rebar3, OTP 27
 
-**Spec:** [`docs/superpowers/specs/2026-03-22-ci-pipeline-design.md`](../../docs/superpowers/specs/2026-03-22-ci-pipeline-design.md)
+**Spec:** [`.github/plans/2-design.md`](2-design.md)
 
 ---
 
