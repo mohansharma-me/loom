@@ -1,0 +1,18 @@
+# ============================================================
+# CODEOWNERS — Auto-assign review requests to repo owner
+# ============================================================
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# IMPORTANT: Replace YOUR_GITHUB_USERNAME below with your actual GitHub username.
+# This file MUST live on the default branch (main) to take effect.
+#
+# Combined with the ruleset rule "Require review from Code Owners",
+# every PR will automatically request YOUR review before it can merge.
+# ============================================================
+
+# Default owner for everything in the repo
+*       @mohansharma-me
+
+# Lock down this file itself so no one can change ownership via PR
+# without your explicit approval
+/.github/CODEOWNERS     @mohansharma-me
