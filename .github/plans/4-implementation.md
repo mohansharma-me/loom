@@ -8,7 +8,7 @@
 
 **Tech Stack:** Erlang/OTP 27, EUnit, `loom_json` (existing), rebar3
 
-**Spec:** `docs/superpowers/specs/2026-03-23-loom-protocol-design.md`
+**Spec:** `.github/plans/4-design.md`
 
 ---
 
