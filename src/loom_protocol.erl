@@ -180,6 +180,7 @@ decode_error_msg(Map) ->
                 {_,     _,     false} -> {error, {invalid_field, <<"message">>, binary, Msg}}
             end
     end.
+
 -spec decode_health(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
 decode_health(Map) ->
     with_fields(<<"health">>, Map, [

@@ -27,7 +27,7 @@ Standards and practices that apply across all phases.
 - [x] Dev environment with Docker Compose and docs — [#3](https://github.com/mohansharma-me/loom/issues/3) `P0-03`
 
 ### Core Communication
-- [ ] Erlang-Python JSON wire protocol with encoder/decoder — [#4](https://github.com/mohansharma-me/loom/issues/4) `P0-04`
+- [x] Erlang-Python JSON wire protocol with encoder/decoder — [#4](https://github.com/mohansharma-me/loom/issues/4) `P0-04`
 - [ ] `loom_port` GenServer for Port-based subprocess management — [#5](https://github.com/mohansharma-me/loom/issues/5) `P0-05`
 - [ ] `loom_adapter.py` wrapping vLLM AsyncLLMEngine — [#6](https://github.com/mohansharma-me/loom/issues/6) `P0-06`
 
@@ -129,13 +129,13 @@ Standards and practices that apply across all phases.
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 3 | 0 | 0 | 3 |
-| Phase 0 | 15 | 3 | 0 | 12 |
+| Phase 0 | 15 | 4 | 0 | 11 |
 | Phase 1 | 11 | 0 | 0 | 11 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **50** | **3** | **0** | **47** |
+| **Total** | **50** | **4** | **0** | **46** |
 
 ## What's Next
 
@@ -144,5 +144,5 @@ Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 1. ~~**#1 — P0-01:** Initialize rebar3 project (unblocks everything)~~ ✓
 2. ~~**#2 — P0-02:** CI pipeline (enables quality gates early)~~ ✓
 3. ~~**#3 — P0-03:** Dev environment (enables local iteration)~~ ✓
-4. **#4 — P0-04:** JSON wire protocol (defines the BEAM↔Python contract)
+4. ~~**#4 — P0-04:** JSON wire protocol (defines the BEAM↔Python contract)~~ ✓
 5. **#5 — P0-05 + #6 — P0-06:** Port GenServer and Python adapter (can be parallel)
