@@ -58,3 +58,66 @@ buffer_no_trailing_newline_test() ->
     {Lines, Buf1} = loom_protocol:feed(<<"no newline">>, Buf0),
     ?assertEqual([], Lines),
     ?assertEqual(<<"no newline">>, Buf1).
+
+%% --- Encode tests ---
+
+-spec encode_health_test() -> any().
+encode_health_test() ->
+    Bin = loom_protocol:encode({health}),
+    ?assert(is_binary(Bin)),
+    ?assertEqual($\n, binary:last(Bin)),
+    Map = loom_json:decode(binary:part(Bin, 0, byte_size(Bin) - 1)),
+    ?assertEqual(#{<<"type">> => <<"health">>}, Map).
+
+-spec encode_memory_test() -> any().
+encode_memory_test() ->
+    Bin = loom_protocol:encode({memory}),
+    Map = loom_json:decode(binary:part(Bin, 0, byte_size(Bin) - 1)),
+    ?assertEqual(#{<<"type">> => <<"memory">>}, Map).
+
+-spec encode_shutdown_test() -> any().
+encode_shutdown_test() ->
+    Bin = loom_protocol:encode({shutdown}),
+    Map = loom_json:decode(binary:part(Bin, 0, byte_size(Bin) - 1)),
+    ?assertEqual(#{<<"type">> => <<"shutdown">>}, Map).
+
+-spec encode_cancel_test() -> any().
+encode_cancel_test() ->
+    Bin = loom_protocol:encode({cancel, <<"req-42">>}),
+    Map = loom_json:decode(binary:part(Bin, 0, byte_size(Bin) - 1)),
+    ?assertEqual(<<"cancel">>, maps:get(<<"type">>, Map)),
+    ?assertEqual(<<"req-42">>, maps:get(<<"id">>, Map)).
+
+-spec encode_generate_empty_params_test() -> any().
+encode_generate_empty_params_test() ->
+    Bin = loom_protocol:encode({generate, <<"req-1">>, <<"Hello">>, #{}}),
+    Map = loom_json:decode(binary:part(Bin, 0, byte_size(Bin) - 1)),
+    ?assertEqual(<<"generate">>, maps:get(<<"type">>, Map)),
+    ?assertEqual(<<"req-1">>, maps:get(<<"id">>, Map)),
+    ?assertEqual(<<"Hello">>, maps:get(<<"prompt">>, Map)),
+    ?assertEqual(#{}, maps:get(<<"params">>, Map)).
+
+-spec encode_generate_full_params_test() -> any().
+encode_generate_full_params_test() ->
+    Params = #{max_tokens => 100, temperature => 0.7, top_p => 0.9, stop => [<<"END">>]},
+    Bin = loom_protocol:encode({generate, <<"req-2">>, <<"Hi">>, Params}),
+    Map = loom_json:decode(binary:part(Bin, 0, byte_size(Bin) - 1)),
+    ParamsMap = maps:get(<<"params">>, Map),
+    ?assertEqual(100, maps:get(<<"max_tokens">>, ParamsMap)),
+    ?assertEqual(0.7, maps:get(<<"temperature">>, ParamsMap)),
+    ?assertEqual(0.9, maps:get(<<"top_p">>, ParamsMap)),
+    ?assertEqual([<<"END">>], maps:get(<<"stop">>, ParamsMap)).
+
+-spec encode_generate_partial_params_test() -> any().
+encode_generate_partial_params_test() ->
+    Params = #{max_tokens => 50},
+    Bin = loom_protocol:encode({generate, <<"req-3">>, <<"Test">>, Params}),
+    Map = loom_json:decode(binary:part(Bin, 0, byte_size(Bin) - 1)),
+    ParamsMap = maps:get(<<"params">>, Map),
+    ?assertEqual(50, maps:get(<<"max_tokens">>, ParamsMap)),
+    ?assertEqual(1, maps:size(ParamsMap)).
+
+-spec encode_bad_input_crashes_test() -> any().
+encode_bad_input_crashes_test() ->
+    ?assertError(function_clause, loom_protocol:encode({bogus})),
+    ?assertError(function_clause, loom_protocol:encode(not_a_tuple)).

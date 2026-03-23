@@ -43,8 +43,21 @@
 %% --- Public API ---
 
 -spec encode(outbound_msg()) -> binary().
-encode(_Msg) ->
-    erlang:error(not_implemented).
+encode({health}) ->
+    terminate_line(loom_json:encode(#{type => health}));
+encode({memory}) ->
+    terminate_line(loom_json:encode(#{type => memory}));
+encode({shutdown}) ->
+    terminate_line(loom_json:encode(#{type => shutdown}));
+encode({cancel, Id}) ->
+    terminate_line(loom_json:encode(#{type => cancel, id => Id}));
+encode({generate, Id, Prompt, Params}) ->
+    terminate_line(loom_json:encode(#{
+        type => generate,
+        id => Id,
+        prompt => Prompt,
+        params => Params
+    })).
 
 -spec decode(binary()) -> {ok, inbound_msg()} | {error, decode_error()}.
 decode(_Bin) ->
@@ -53,6 +66,12 @@ decode(_Bin) ->
 -spec new_buffer() -> buffer().
 new_buffer() ->
     <<>>.
+
+%% --- Internal helpers ---
+
+-spec terminate_line(binary()) -> binary().
+terminate_line(JsonBin) ->
+    <<JsonBin/binary, $\n>>.
 
 -spec feed(binary(), buffer()) -> {[binary()], buffer()}.
 feed(Data, Buf) ->
