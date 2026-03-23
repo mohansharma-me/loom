@@ -30,7 +30,8 @@ Standards and practices that apply across all phases.
 ### Core Communication
 - [x] Erlang-Python JSON wire protocol with encoder/decoder — [#4](https://github.com/mohansharma-me/loom/issues/4) `P0-04`
 - [x] `loom_port` gen_statem for Port-based subprocess management — [#5](https://github.com/mohansharma-me/loom/issues/5) `P0-05`
-- [ ] `loom_adapter.py` wrapping vLLM AsyncLLMEngine — [#6](https://github.com/mohansharma-me/loom/issues/6) `P0-06`
+- [x] `loom_adapter.py` wrapping vLLM AsyncLLMEngine — [#6](https://github.com/mohansharma-me/loom/issues/6) `P0-06`
+- [~] `loom_adapter_mlx.py` for MLX (Apple Silicon) — [#63](https://github.com/mohansharma-me/loom/issues/63) `P1-12` *(pulled to P0 for local testability)*
 
 ### Supervision & Monitoring
 - [ ] `loom_gpu_monitor` GenServer for GPU health polling — [#8](https://github.com/mohansharma-me/loom/issues/8) `P0-07`
@@ -69,7 +70,7 @@ Standards and practices that apply across all phases.
 
 ### Additional Backends
 - [ ] `loom_adapter_trt.py` for TensorRT-LLM — [#24](https://github.com/mohansharma-me/loom/issues/24) `P1-08`
-- [ ] `loom_adapter_mlx.py` for MLX (Apple Silicon) — [#63](https://github.com/mohansharma-me/loom/issues/63) `P1-12`
+- [~] `loom_adapter_mlx.py` for MLX (Apple Silicon) — [#63](https://github.com/mohansharma-me/loom/issues/63) `P1-12` *(moved to P0)*
 
 ### Observability & API
 - [ ] `loom_metrics` with telemetry events and Prometheus endpoint — [#25](https://github.com/mohansharma-me/loom/issues/25) `P1-09`
@@ -134,13 +135,13 @@ Standards and practices that apply across all phases.
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 4 | 0 | 0 | 4 |
-| Phase 0 | 16 | 5 | 0 | 11 |
-| Phase 1 | 12 | 0 | 0 | 12 |
+| Phase 0 | 17 | 6 | 1 | 10 |
+| Phase 1 | 11 | 0 | 0 | 11 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **53** | **5** | **0** | **48** |
+| **Total** | **53** | **6** | **1** | **46** |
 
 ## What's Next
 
@@ -151,4 +152,5 @@ Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 3. ~~**#3 — P0-03:** Dev environment (enables local iteration)~~ ✓
 4. ~~**#4 — P0-04:** JSON wire protocol (defines the BEAM↔Python contract)~~ ✓
 5. ~~**#5 — P0-05:** Port GenServer (loom_port gen_statem)~~ ✓
-6. **#6 — P0-06:** Python adapter wrapping vLLM AsyncLLMEngine
+6. ~~**#6 — P0-06:** Python adapter wrapping vLLM AsyncLLMEngine~~ ✓
+7. **#8 — P0-07:** GPU health monitoring (loom_gpu_monitor)

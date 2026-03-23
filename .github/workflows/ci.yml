@@ -82,6 +82,9 @@ jobs:
       - name: Common Test
         run: rebar3 ct --verbose
 
+      - name: Python adapter tests
+        run: python3 -m unittest discover test -p "adapter_*_test.py" -v
+
   analysis:
     name: Analysis
     runs-on: ubuntu-24.04
@@ -123,3 +126,6 @@ jobs:
 
       - name: Run mock adapter tests
         run: docker compose run --rm test python3 -m unittest test.mock_adapter_test -v
+
+      - name: Run Python adapter tests
+        run: docker compose run --rm test python3 -m unittest discover test -p "adapter_*_test.py" -v
