@@ -11,13 +11,16 @@ import json
 import sys
 
 
+# ASSUMPTION: Fixed mock tokens simulate a generate response; real adapter will stream actual model output.
 MOCK_TOKENS = ["Hello", "from", "Loom", "mock", "adapter"]
 
 
+# ASSUMPTION: Returns zeroed GPU metrics since no real GPU is present.
 def handle_health(_msg):
     return [{"type": "health", "status": "ok", "gpu_util": 0.0, "mem_used_gb": 0.0}]
 
 
+# ASSUMPTION: Returns 80GB total to approximate H100 GPU specs (see KNOWLEDGE.md).
 def handle_memory(_msg):
     return [
         {
@@ -56,6 +59,7 @@ def handle_generate(msg):
     return responses
 
 
+# ASSUMPTION: Protocol matches KNOWLEDGE.md section 4.4 line-delimited JSON wire protocol.
 HANDLERS = {
     "health": handle_health,
     "memory": handle_memory,
@@ -82,14 +86,25 @@ def process_line(line):
 
 
 def main():
+    print("[mock_adapter] started, reading from stdin", file=sys.stderr)
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
-        responses = process_line(line)
-        for resp in responses:
-            sys.stdout.write(json.dumps(resp) + '\n')
-        sys.stdout.flush()
+        try:
+            responses = process_line(line)
+            for resp in responses:
+                sys.stdout.write(json.dumps(resp) + '\n')
+            sys.stdout.flush()
+        except Exception as e:
+            error_resp = {"type": "error", "message": f"internal adapter error: {e}"}
+            try:
+                sys.stdout.write(json.dumps(error_resp) + '\n')
+                sys.stdout.flush()
+            except Exception:
+                pass
+            print(f"[mock_adapter] ERROR: {e}", file=sys.stderr)
+    print("[mock_adapter] stdin closed, shutting down", file=sys.stderr)
 
 
 if __name__ == '__main__':

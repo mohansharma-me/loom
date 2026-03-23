@@ -16,8 +16,8 @@ ADAPTER_PATH = os.path.join(
 class MockAdapterTest(unittest.TestCase):
     """Test the mock adapter's JSON protocol responses."""
 
-    def _send_receive(self, message):
-        """Send a JSON message to the adapter and return parsed responses."""
+    def _send_receive_raw(self, raw_input):
+        """Send raw text to the adapter and return parsed responses."""
         proc = subprocess.Popen(
             ['python3', ADAPTER_PATH],
             stdin=subprocess.PIPE,
@@ -25,25 +25,39 @@ class MockAdapterTest(unittest.TestCase):
             stderr=subprocess.PIPE,
             text=True,
         )
-        stdout, stderr = proc.communicate(
-            input=json.dumps(message) + '\n', timeout=5
-        )
+        try:
+            stdout, stderr = proc.communicate(input=raw_input, timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            self.fail(
+                f"Adapter timed out after 5s.\n"
+                f"stderr:\n{stderr}\nstdout:\n{stdout}"
+            )
+        if proc.returncode != 0:
+            self.fail(
+                f"Adapter exited with code {proc.returncode}.\n"
+                f"stderr:\n{stderr}\nstdout:\n{stdout}"
+            )
         lines = [l for l in stdout.strip().split('\n') if l]
-        return [json.loads(line) for line in lines]
+        parsed = []
+        for line in lines:
+            try:
+                parsed.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                self.fail(
+                    f"Non-JSON output: {line!r}\nAll stdout: {stdout!r}\nError: {e}"
+                )
+        return parsed
+
+    def _send_receive(self, message):
+        """Send a single JSON message to the adapter and return parsed responses."""
+        return self._send_receive_raw(json.dumps(message) + '\n')
 
     def _send_receive_multi(self, messages):
         """Send multiple JSON messages in one session, return all responses."""
-        proc = subprocess.Popen(
-            ['python3', ADAPTER_PATH],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
         input_data = '\n'.join(json.dumps(m) for m in messages) + '\n'
-        stdout, stderr = proc.communicate(input=input_data, timeout=5)
-        lines = [l for l in stdout.strip().split('\n') if l]
-        return [json.loads(line) for line in lines]
+        return self._send_receive_raw(input_data)
 
     def test_health(self):
         responses = self._send_receive({"type": "health"})
@@ -98,12 +112,14 @@ class MockAdapterTest(unittest.TestCase):
         self.assertEqual(len(responses), 1)
         resp = responses[0]
         self.assertEqual(resp["type"], "error")
+        self.assertIn("missing 'type' field", resp["message"])
 
     def test_generate_missing_id(self):
         responses = self._send_receive({"type": "generate", "prompt": "Hi"})
         self.assertEqual(len(responses), 1)
         resp = responses[0]
         self.assertEqual(resp["type"], "error")
+        self.assertIn("missing 'id' field", resp["message"])
 
     def test_multiple_messages_in_session(self):
         """Verify the adapter handles multiple messages in a single session."""
@@ -116,6 +132,33 @@ class MockAdapterTest(unittest.TestCase):
         self.assertEqual(responses[0]["type"], "health")
         self.assertEqual(responses[1]["type"], "memory")
         self.assertEqual(responses[2]["type"], "health")
+
+
+    def test_invalid_json(self):
+        """Verify the adapter handles malformed JSON gracefully."""
+        responses = self._send_receive_raw("{this is not valid json\n")
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0]["type"], "error")
+        self.assertIn("invalid JSON", responses[0]["message"])
+
+    def test_blank_lines_ignored(self):
+        """Verify blank lines between messages produce no output."""
+        input_data = "\n\n" + json.dumps({"type": "health"}) + "\n\n\n"
+        responses = self._send_receive_raw(input_data)
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0]["type"], "health")
+
+    def test_clean_exit_on_eof(self):
+        """Verify the adapter exits cleanly when stdin closes."""
+        proc = subprocess.Popen(
+            ['python3', ADAPTER_PATH],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout, stderr = proc.communicate(input="", timeout=5)
+        self.assertEqual(proc.returncode, 0)
 
 
 if __name__ == '__main__':
