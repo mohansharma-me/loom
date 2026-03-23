@@ -81,7 +81,7 @@ Designed to be cross-platform and forward-compatible with the Phase 4+ gRPC migr
 `erlang:monitor(process, Owner)` is called in `init/1` — the owner is guaranteed alive at that point since `gen_statem:start_link/3` is synchronous.
 
 **spawning:**
-- Opens Port with `{spawn_executable, Cmd}`, options: `[{line, MaxLineLen}, stderr_to_stdout, binary, exit_status, use_stdio]`
+- Opens Port with `{spawn_executable, Cmd}`, options: `[{line, MaxLineLen}, binary, exit_status, use_stdio]` (no `stderr_to_stdout` — adapter stderr goes to BEAM's stderr to avoid injecting non-JSON into the data stream)
 - Captures OS pid via `erlang:port_info(Port, os_pid)`
 - Sets `{state_timeout, SpawnTimeoutMs, spawn_timeout}` (default 5s)
 - Port exit in this state -> notify owner, terminate
