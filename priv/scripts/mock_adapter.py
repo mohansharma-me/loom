@@ -3,17 +3,36 @@
 
 Reads line-delimited JSON from stdin, writes responses to stdout.
 Speaks the Loom wire protocol (see KNOWLEDGE.md section 4.4).
-Runs until stdin is closed (EOF).
+
+Startup protocol:
+  1. Send one heartbeat immediately (status=loading).
+  2. If --startup-delay > 0, loop sending periodic heartbeats until delay elapses.
+  3. Send ready message.
+  4. Enter command loop.
+
+Stdin watchdog: daemon thread reads stdin byte-by-byte; on EOF calls os._exit(1).
+This is the cross-platform force-kill mechanism when the Erlang port is closed.
 
 Uses only Python stdlib — no external dependencies.
 """
+import argparse
 import json
+import os
+import queue
 import sys
+import threading
+import time
 import traceback
 
 
 # ASSUMPTION: Fixed mock tokens simulate a generate response; real adapter will stream actual model output.
 MOCK_TOKENS = ["Hello", "from", "Loom", "mock", "adapter"]
+
+
+def send_msg(msg):
+    """Write a JSON message + newline to stdout and flush immediately."""
+    sys.stdout.write(json.dumps(msg) + '\n')
+    sys.stdout.flush()
 
 
 # ASSUMPTION: Returns zeroed GPU metrics since no real GPU is present.
@@ -70,7 +89,11 @@ def handle_cancel(msg):
 
 def handle_shutdown(_msg):
     print("[mock_adapter] shutdown requested, exiting", file=sys.stderr)
-    sys.exit(0)
+    sys.stderr.flush()
+    sys.stdout.flush()
+    # ASSUMPTION: os._exit(0) is used instead of sys.exit(0) to bypass Python's
+    # atexit/thread cleanup, which can SIGABRT when daemon threads are blocked on I/O.
+    os._exit(0)
 
 
 # ASSUMPTION: Protocol matches KNOWLEDGE.md section 4.4 line-delimited JSON wire protocol.
@@ -104,10 +127,99 @@ def process_line(line):
     return handler(msg)
 
 
+def startup_sequence(startup_delay, heartbeat_interval):
+    """Send heartbeat(s) during loading, then send ready.
+
+    Always sends at least one heartbeat before ready.
+    If startup_delay > 0, sends periodic heartbeats every heartbeat_interval
+    seconds until the delay elapses, then sends ready.
+    """
+    # ASSUMPTION: Initial heartbeat is always sent regardless of startup_delay,
+    # so loom_port always sees at least one heartbeat before ready.
+    send_msg({"type": "heartbeat", "status": "loading",
+              "detail": "initializing mock engine"})
+
+    if startup_delay > 0:
+        deadline = time.monotonic() + startup_delay
+        while time.monotonic() < deadline:
+            sleep_time = min(heartbeat_interval, deadline - time.monotonic())
+            if sleep_time <= 0:
+                break
+            time.sleep(sleep_time)
+            if time.monotonic() < deadline:
+                send_msg({"type": "heartbeat", "status": "loading",
+                          "detail": "initializing mock engine"})
+
+    send_msg({"type": "ready", "model": "mock", "backend": "mock"})
+
+
+def stdin_watchdog(line_queue):
+    """Daemon thread: read all stdin lines, detect EOF, and force-exit.
+
+    Reads stdin line by line via sys.stdin.buffer.readline(). On EOF
+    (empty bytes returned), calls os._exit(1) to force-terminate the process.
+    This is the cross-platform mechanism used by loom_port's 3-level shutdown
+    escalation: closing the Erlang port EOF's stdin which triggers this watchdog.
+
+    Lines read are put into line_queue for the main command loop to process.
+
+    ASSUMPTION: os._exit(1) is used (not sys.exit) to bypass Python cleanup
+    and guarantee immediate termination even if the main thread is blocked.
+    ASSUMPTION: This thread is the ONLY reader of sys.stdin so there is no
+    race between it and the main loop.
+    """
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            # EOF — stdin was closed; force-terminate immediately
+            print("[mock_adapter] stdin closed (watchdog), force-exiting",
+                  file=sys.stderr)
+            os._exit(1)
+        line_queue.put(line)
+
+
 def main():
+    parser = argparse.ArgumentParser(description="Loom mock inference adapter")
+    parser.add_argument(
+        '--startup-delay',
+        type=float,
+        default=0.0,
+        help="Simulated model loading delay in seconds (default: 0)"
+    )
+    parser.add_argument(
+        '--heartbeat-interval',
+        type=float,
+        default=5.0,
+        help="Interval between heartbeats during startup delay in seconds (default: 5.0)"
+    )
+    args = parser.parse_args()
+
     print("[mock_adapter] started, reading from stdin", file=sys.stderr)
-    for line in sys.stdin:
-        line = line.strip()
+
+    # ASSUMPTION: line_queue is the sole channel between the stdin watchdog thread
+    # and the main command loop. The watchdog is the ONLY reader of sys.stdin.
+    line_queue = queue.Queue()
+
+    # Start stdin watchdog as a daemon thread (won't block process exit).
+    # The watchdog is the sole stdin reader; it forwards lines to line_queue
+    # and calls os._exit(1) on EOF.
+    watchdog = threading.Thread(
+        target=stdin_watchdog, args=(line_queue,), daemon=True, name="stdin-watchdog"
+    )
+    watchdog.start()
+
+    # Send startup sequence (heartbeat + ready)
+    startup_sequence(args.startup_delay, args.heartbeat_interval)
+
+    # Enter command loop — reads lines from the queue fed by the watchdog thread
+    while True:
+        try:
+            raw_line = line_queue.get()
+        except Exception as e:
+            print(f"[mock_adapter] ERROR: line_queue.get() failed: {e}",
+                  file=sys.stderr)
+            os._exit(2)
+        line = raw_line.decode(errors='replace').strip()
         if not line:
             continue
         try:
@@ -127,7 +239,6 @@ def main():
                 print(f"[mock_adapter] FATAL: failed to write error response: {write_err}",
                       file=sys.stderr)
                 sys.exit(1)
-    print("[mock_adapter] stdin closed, shutting down", file=sys.stderr)
 
 
 if __name__ == '__main__':

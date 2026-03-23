@@ -14,6 +14,7 @@ Standards and practices that apply across all phases.
 - [ ] **Testing strategy and infrastructure** — [#49](https://github.com/mohansharma-me/loom/issues/49) `CC-01`
 - [ ] **Structured logging and observability conventions** — [#50](https://github.com/mohansharma-me/loom/issues/50) `CC-02`
 - [ ] **Type specs and Dialyzer compliance** — [#51](https://github.com/mohansharma-me/loom/issues/51) `CC-03`
+- [ ] **JSON configuration parsing module (`loom_config`)** — [#65](https://github.com/mohansharma-me/loom/issues/65) `CC-04`
 
 ---
 
@@ -28,7 +29,7 @@ Standards and practices that apply across all phases.
 
 ### Core Communication
 - [x] Erlang-Python JSON wire protocol with encoder/decoder — [#4](https://github.com/mohansharma-me/loom/issues/4) `P0-04`
-- [ ] `loom_port` GenServer for Port-based subprocess management — [#5](https://github.com/mohansharma-me/loom/issues/5) `P0-05`
+- [x] `loom_port` gen_statem for Port-based subprocess management — [#5](https://github.com/mohansharma-me/loom/issues/5) `P0-05`
 - [ ] `loom_adapter.py` wrapping vLLM AsyncLLMEngine — [#6](https://github.com/mohansharma-me/loom/issues/6) `P0-06`
 
 ### Supervision & Monitoring
@@ -132,14 +133,14 @@ Standards and practices that apply across all phases.
 
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
-| Cross-Cutting | 3 | 0 | 0 | 3 |
-| Phase 0 | 16 | 4 | 0 | 12 |
+| Cross-Cutting | 4 | 0 | 0 | 4 |
+| Phase 0 | 16 | 5 | 0 | 11 |
 | Phase 1 | 12 | 0 | 0 | 12 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **52** | **4** | **0** | **48** |
+| **Total** | **53** | **5** | **0** | **48** |
 
 ## What's Next
 
@@ -149,4 +150,5 @@ Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 2. ~~**#2 — P0-02:** CI pipeline (enables quality gates early)~~ ✓
 3. ~~**#3 — P0-03:** Dev environment (enables local iteration)~~ ✓
 4. ~~**#4 — P0-04:** JSON wire protocol (defines the BEAM↔Python contract)~~ ✓
-5. **#5 — P0-05 + #6 — P0-06:** Port GenServer and Python adapter (can be parallel)
+5. ~~**#5 — P0-05:** Port GenServer (loom_port gen_statem)~~ ✓
+6. **#6 — P0-06:** Python adapter wrapping vLLM AsyncLLMEngine
