@@ -2,6 +2,10 @@
 
 -export([encode/1, decode/1, new_buffer/0, feed/2]).
 
+%% ASSUMPTION: to_float/1 is added now (unused until Task 7 health decode)
+%% but suppressed here to avoid breaking the build; it will be used in Task 7.
+-compile([{nowarn_unused_function, [to_float/1]}]).
+
 -export_type([
     outbound_msg/0, inbound_msg/0, generate_params/0,
     buffer/0, decode_error/0
@@ -85,11 +89,79 @@ decode_by_type(<<"memory">>, Map) -> decode_memory(Map);
 decode_by_type(<<"ready">>, Map) -> decode_ready(Map);
 decode_by_type(Type, _Map) -> {error, {unknown_type, Type}}.
 
-%% Stubs for per-type decoders (implemented in subsequent tasks)
+%% --- Validation helpers ---
+
+-spec require(binary(), binary(), map()) -> {ok, term()} | {error, decode_error()}.
+require(Field, Type, Map) ->
+    case maps:get(Field, Map, undefined) of
+        undefined -> {error, {missing_field, Field, Type}};
+        Value -> {ok, Value}
+    end.
+
+-spec require_type(binary(), atom(), term(), fun((term()) -> boolean())) ->
+    {ok, term()} | {error, decode_error()}.
+require_type(Field, Expected, Value, Check) ->
+    case Check(Value) of
+        true -> {ok, Value};
+        false -> {error, {invalid_field, Field, Expected, Value}}
+    end.
+
+-spec is_non_neg_integer(term()) -> boolean().
+is_non_neg_integer(V) -> is_integer(V) andalso V >= 0.
+
+-spec to_float(number()) -> float().
+to_float(V) when is_integer(V) -> float(V);
+to_float(V) when is_float(V) -> V.
+
+%% Generic field extraction + validation
+-spec with_fields(binary(), map(),
+    [{binary(), atom(), fun((term()) -> boolean())}],
+    fun(([term()]) -> {ok, inbound_msg()})) ->
+    {ok, inbound_msg()} | {error, decode_error()}.
+with_fields(Type, Map, Fields, Build) ->
+    with_fields_acc(Type, Map, Fields, [], Build).
+
+-spec with_fields_acc(binary(), map(),
+    [{binary(), atom(), fun((term()) -> boolean())}],
+    [term()],
+    fun(([term()]) -> {ok, inbound_msg()})) ->
+    {ok, inbound_msg()} | {error, decode_error()}.
+with_fields_acc(_Type, _Map, [], Acc, Build) ->
+    Build(lists:reverse(Acc));
+with_fields_acc(Type, Map, [{Field, Expected, Check} | Rest], Acc, Build) ->
+    case require(Field, Type, Map) of
+        {error, _} = Err -> Err;
+        {ok, Value} ->
+            case require_type(Field, Expected, Value, Check) of
+                {error, _} = Err -> Err;
+                {ok, Valid} -> with_fields_acc(Type, Map, Rest, [Valid | Acc], Build)
+            end
+    end.
+
+%% --- Per-type decoders ---
+
 -spec decode_token(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
-decode_token(_) -> erlang:error(not_implemented).
+decode_token(Map) ->
+    with_fields(<<"token">>, Map, [
+        {<<"id">>, binary, fun is_binary/1},
+        {<<"token_id">>, integer, fun is_non_neg_integer/1},
+        {<<"text">>, binary, fun is_binary/1},
+        {<<"finished">>, boolean, fun is_boolean/1}
+    ], fun([Id, TokenId, Text, Finished]) ->
+        {ok, {token, Id, TokenId, Text, Finished}}
+    end).
+
 -spec decode_done(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
-decode_done(_) -> erlang:error(not_implemented).
+decode_done(Map) ->
+    with_fields(<<"done">>, Map, [
+        {<<"id">>, binary, fun is_binary/1},
+        {<<"tokens_generated">>, integer, fun is_non_neg_integer/1},
+        {<<"time_ms">>, integer, fun is_non_neg_integer/1}
+    ], fun([Id, TokensGenerated, TimeMs]) ->
+        {ok, {done, Id, TokensGenerated, TimeMs}}
+    end).
+
+%% Stubs for remaining per-type decoders (implemented in subsequent tasks)
 -spec decode_error_msg(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
 decode_error_msg(_) -> erlang:error(not_implemented).
 -spec decode_health(map()) -> {ok, inbound_msg()} | {error, decode_error()}.

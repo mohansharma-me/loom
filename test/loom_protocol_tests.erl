@@ -149,3 +149,71 @@ decode_not_object_test() ->
 -spec decode_array_not_object_test() -> any().
 decode_array_not_object_test() ->
     ?assertEqual({error, missing_type}, loom_protocol:decode(<<"[1,2,3]">>)).
+
+%% --- Decode token tests ---
+
+-spec decode_token_test() -> any().
+decode_token_test() ->
+    Json = loom_json:encode(#{
+        type => <<"token">>, id => <<"r1">>,
+        token_id => 42, text => <<"hello">>, finished => false
+    }),
+    ?assertEqual(
+        {ok, {token, <<"r1">>, 42, <<"hello">>, false}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_token_finished_test() -> any().
+decode_token_finished_test() ->
+    Json = loom_json:encode(#{
+        type => <<"token">>, id => <<"r1">>,
+        token_id => 99, text => <<"end">>, finished => true
+    }),
+    ?assertEqual(
+        {ok, {token, <<"r1">>, 99, <<"end">>, true}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_token_missing_id_test() -> any().
+decode_token_missing_id_test() ->
+    Json = loom_json:encode(#{
+        type => <<"token">>, token_id => 1, text => <<"x">>, finished => false
+    }),
+    ?assertEqual(
+        {error, {missing_field, <<"id">>, <<"token">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_token_bad_token_id_test() -> any().
+decode_token_bad_token_id_test() ->
+    Json = loom_json:encode(#{
+        type => <<"token">>, id => <<"r1">>,
+        token_id => <<"not_int">>, text => <<"x">>, finished => false
+    }),
+    ?assertMatch(
+        {error, {invalid_field, <<"token_id">>, integer, _}},
+        loom_protocol:decode(Json)
+    ).
+
+%% --- Decode done tests ---
+
+-spec decode_done_test() -> any().
+decode_done_test() ->
+    Json = loom_json:encode(#{
+        type => <<"done">>, id => <<"r1">>,
+        tokens_generated => 47, time_ms => 1820
+    }),
+    ?assertEqual(
+        {ok, {done, <<"r1">>, 47, 1820}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_done_missing_field_test() -> any().
+decode_done_missing_field_test() ->
+    Json = loom_json:encode(#{
+        type => <<"done">>, id => <<"r1">>, tokens_generated => 10
+    }),
+    ?assertEqual(
+        {error, {missing_field, <<"time_ms">>, <<"done">>}},
+        loom_protocol:decode(Json)
+    ).
