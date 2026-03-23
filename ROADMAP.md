@@ -14,6 +14,7 @@ Standards and practices that apply across all phases.
 - [ ] **Testing strategy and infrastructure** — [#49](https://github.com/mohansharma-me/loom/issues/49) `CC-01`
 - [ ] **Structured logging and observability conventions** — [#50](https://github.com/mohansharma-me/loom/issues/50) `CC-02`
 - [ ] **Type specs and Dialyzer compliance** — [#51](https://github.com/mohansharma-me/loom/issues/51) `CC-03`
+- [ ] **JSON configuration parsing module (`loom_config`)** — [#65](https://github.com/mohansharma-me/loom/issues/65) `CC-04`
 
 ---
 
@@ -132,14 +133,14 @@ Standards and practices that apply across all phases.
 
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
-| Cross-Cutting | 3 | 0 | 0 | 3 |
+| Cross-Cutting | 4 | 0 | 0 | 4 |
 | Phase 0 | 16 | 4 | 0 | 12 |
 | Phase 1 | 12 | 0 | 0 | 12 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **52** | **4** | **0** | **48** |
+| **Total** | **53** | **4** | **0** | **49** |
 
 ## What's Next
 
