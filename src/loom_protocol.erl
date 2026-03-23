@@ -2,9 +2,6 @@
 
 -export([encode/1, decode/1, new_buffer/0, feed/2]).
 
-%% ASSUMPTION: to_float/1 is added now (unused until Task 7 health decode)
-%% but suppressed here to avoid breaking the build; it will be used in Task 7.
--compile([{nowarn_unused_function, [to_float/1]}]).
 
 -export_type([
     outbound_msg/0, inbound_msg/0, generate_params/0,
@@ -184,11 +181,49 @@ decode_error_msg(Map) ->
             end
     end.
 -spec decode_health(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
-decode_health(_) -> erlang:error(not_implemented).
+decode_health(Map) ->
+    with_fields(<<"health">>, Map, [
+        {<<"status">>, binary, fun is_binary/1},
+        {<<"gpu_util">>, number, fun is_number/1},
+        {<<"mem_used_gb">>, number, fun is_number/1},
+        {<<"mem_total_gb">>, number, fun is_number/1}
+    ], fun([Status, GpuUtil, MemUsedGb, MemTotalGb]) ->
+        {ok, {health_response, Status,
+              to_float(GpuUtil), to_float(MemUsedGb), to_float(MemTotalGb)}}
+    end).
+
 -spec decode_memory(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
-decode_memory(_) -> erlang:error(not_implemented).
+decode_memory(Map) ->
+    Type = <<"memory">>,
+    %% Validate required keys exist and are numbers
+    Required = [<<"total_gb">>, <<"used_gb">>, <<"available_gb">>],
+    case validate_required_numbers(Type, Map, Required) of
+        {error, _} = Err -> Err;
+        ok ->
+            %% Strip the "type" key, keep everything else
+            Info = maps:remove(<<"type">>, Map),
+            {ok, {memory_response, Info}}
+    end.
+
+-spec validate_required_numbers(binary(), map(), [binary()]) ->
+    ok | {error, decode_error()}.
+validate_required_numbers(_Type, _Map, []) ->
+    ok;
+validate_required_numbers(Type, Map, [Field | Rest]) ->
+    case maps:get(Field, Map, undefined) of
+        undefined -> {error, {missing_field, Field, Type}};
+        V when is_number(V) -> validate_required_numbers(Type, Map, Rest);
+        V -> {error, {invalid_field, Field, number, V}}
+    end.
+
 -spec decode_ready(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
-decode_ready(_) -> erlang:error(not_implemented).
+decode_ready(Map) ->
+    with_fields(<<"ready">>, Map, [
+        {<<"model">>, binary, fun is_binary/1},
+        {<<"backend">>, binary, fun is_binary/1}
+    ], fun([Model, Backend]) ->
+        {ok, {ready, Model, Backend}}
+    end).
 
 -spec new_buffer() -> buffer().
 new_buffer() ->

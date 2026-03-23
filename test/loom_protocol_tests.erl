@@ -281,3 +281,144 @@ decode_error_invalid_id_type_test() ->
         {error, {invalid_field, <<"id">>, binary, _}},
         loom_protocol:decode(Json)
     ).
+
+%% --- Decode health_response tests ---
+
+-spec decode_health_response_test() -> any().
+decode_health_response_test() ->
+    Json = loom_json:encode(#{
+        type => <<"health">>, status => <<"ok">>,
+        gpu_util => 0.73, mem_used_gb => 62.4, mem_total_gb => 80.0
+    }),
+    ?assertEqual(
+        {ok, {health_response, <<"ok">>, 0.73, 62.4, 80.0}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_health_response_missing_field_test() -> any().
+decode_health_response_missing_field_test() ->
+    Json = loom_json:encode(#{
+        type => <<"health">>, status => <<"ok">>,
+        gpu_util => 0.5, mem_used_gb => 10.0
+    }),
+    ?assertEqual(
+        {error, {missing_field, <<"mem_total_gb">>, <<"health">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_health_response_integer_coercion_test() -> any().
+decode_health_response_integer_coercion_test() ->
+    %% JSON integers (e.g., 0 instead of 0.0) should be coerced to floats
+    Json = loom_json:encode(#{
+        type => <<"health">>, status => <<"ok">>,
+        gpu_util => 0, mem_used_gb => 0, mem_total_gb => 80
+    }),
+    ?assertEqual(
+        {ok, {health_response, <<"ok">>, 0.0, 0.0, 80.0}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_health_response_bad_type_test() -> any().
+decode_health_response_bad_type_test() ->
+    Json = loom_json:encode(#{
+        type => <<"health">>, status => <<"ok">>,
+        gpu_util => <<"not_number">>, mem_used_gb => 0.0, mem_total_gb => 80.0
+    }),
+    ?assertMatch(
+        {error, {invalid_field, <<"gpu_util">>, number, _}},
+        loom_protocol:decode(Json)
+    ).
+
+%% --- Decode memory_response tests ---
+
+-spec decode_memory_response_test() -> any().
+decode_memory_response_test() ->
+    Json = loom_json:encode(#{
+        type => <<"memory">>,
+        total_gb => 80.0, used_gb => 62.4, available_gb => 17.6
+    }),
+    {ok, {memory_response, Info}} = loom_protocol:decode(Json),
+    ?assertEqual(80.0, maps:get(<<"total_gb">>, Info)),
+    ?assertEqual(62.4, maps:get(<<"used_gb">>, Info)),
+    ?assertEqual(17.6, maps:get(<<"available_gb">>, Info)).
+
+-spec decode_memory_response_extra_keys_test() -> any().
+decode_memory_response_extra_keys_test() ->
+    Json = loom_json:encode(#{
+        type => <<"memory">>,
+        total_gb => 80.0, used_gb => 40.0, available_gb => 40.0,
+        kv_cache_gb => 25.0
+    }),
+    {ok, {memory_response, Info}} = loom_protocol:decode(Json),
+    ?assertEqual(25.0, maps:get(<<"kv_cache_gb">>, Info)).
+
+-spec decode_memory_response_missing_field_test() -> any().
+decode_memory_response_missing_field_test() ->
+    Json = loom_json:encode(#{
+        type => <<"memory">>,
+        total_gb => 80.0, used_gb => 40.0
+    }),
+    ?assertEqual(
+        {error, {missing_field, <<"available_gb">>, <<"memory">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_memory_bad_type_test() -> any().
+decode_memory_bad_type_test() ->
+    Json = loom_json:encode(#{
+        type => <<"memory">>,
+        total_gb => <<"not_number">>, used_gb => 0.0, available_gb => 0.0
+    }),
+    ?assertMatch(
+        {error, {invalid_field, <<"total_gb">>, number, _}},
+        loom_protocol:decode(Json)
+    ).
+
+%% --- Decode ready tests ---
+
+-spec decode_ready_test() -> any().
+decode_ready_test() ->
+    Json = loom_json:encode(#{
+        type => <<"ready">>,
+        model => <<"meta-llama/Llama-3-8B">>,
+        backend => <<"vllm">>
+    }),
+    ?assertEqual(
+        {ok, {ready, <<"meta-llama/Llama-3-8B">>, <<"vllm">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_ready_missing_model_test() -> any().
+decode_ready_missing_model_test() ->
+    Json = loom_json:encode(#{type => <<"ready">>, backend => <<"vllm">>}),
+    ?assertEqual(
+        {error, {missing_field, <<"model">>, <<"ready">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_ready_missing_backend_test() -> any().
+decode_ready_missing_backend_test() ->
+    Json = loom_json:encode(#{type => <<"ready">>, model => <<"m">>}),
+    ?assertEqual(
+        {error, {missing_field, <<"backend">>, <<"ready">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_ready_bad_type_test() -> any().
+decode_ready_bad_type_test() ->
+    Json = loom_json:encode(#{type => <<"ready">>, model => 42, backend => <<"vllm">>}),
+    ?assertMatch(
+        {error, {invalid_field, <<"model">>, binary, _}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_done_bad_type_test() -> any().
+decode_done_bad_type_test() ->
+    Json = loom_json:encode(#{
+        type => <<"done">>, id => <<"r1">>,
+        tokens_generated => <<"not_int">>, time_ms => 100
+    }),
+    ?assertMatch(
+        {error, {invalid_field, <<"tokens_generated">>, integer, _}},
+        loom_protocol:decode(Json)
+    ).
