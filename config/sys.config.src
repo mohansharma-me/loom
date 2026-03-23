@@ -1,0 +1,7 @@
+[
+    {loom, []},
+    {sasl, [
+        {sasl_error_logger, tty},
+        {errlog_type, error}
+    ]}
+].

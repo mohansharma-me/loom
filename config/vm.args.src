@@ -1,0 +1,6 @@
+-name ${LOOM_NODE_NAME}
+-setcookie ${LOOM_COOKIE}
++K true
++A 30
++P 1048576
++Q 1048576
