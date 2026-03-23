@@ -38,15 +38,16 @@
 ]).
 
 -record(data, {
-    port      :: port() | undefined,
-    os_pid    :: non_neg_integer() | undefined,
-    ref       :: reference(),
-    owner     :: pid(),
-    owner_mon :: reference(),
-    line_buf  :: binary(),
-    opts      :: map(),
-    model     :: binary() | undefined,
-    backend   :: binary() | undefined
+    port        :: port() | undefined,
+    closed_port :: port() | undefined,  %% preserved after port_close for matching late exit_status
+    os_pid      :: non_neg_integer() | undefined,
+    ref         :: reference(),
+    owner       :: pid(),
+    owner_mon   :: reference(),
+    line_buf    :: binary(),
+    opts        :: map(),
+    model       :: binary() | undefined,
+    backend     :: binary() | undefined
 }).
 
 %%====================================================================
@@ -55,7 +56,13 @@
 
 -spec start_link(map()) -> {ok, pid()} | {error, term()}.
 start_link(Opts) ->
-    gen_statem:start_link(?MODULE, Opts, []).
+    %% ASSUMPTION: owner defaults to the calling process, resolved here
+    %% (not in init/1 where self() would be the gen_statem pid).
+    Opts1 = case maps:is_key(owner, Opts) of
+        true -> Opts;
+        false -> Opts#{owner => self()}
+    end,
+    gen_statem:start_link(?MODULE, Opts1, []).
 
 -spec send(pid(), loom_protocol:outbound_msg()) -> ok | {error, not_ready}.
 send(Pid, Msg) ->
@@ -86,7 +93,7 @@ init(Opts) ->
     case maps:find(command, Opts) of
         {ok, Cmd} when is_list(Cmd) ->
             Args = maps:get(args, Opts, []),
-            Owner = maps:get(owner, Opts, self()),
+            Owner = maps:get(owner, Opts),
             MaxLineLen = maps:get(max_line_length, Opts, 1048576),
             Ref = make_ref(),
             OwnerMon = erlang:monitor(process, Owner),
@@ -105,15 +112,16 @@ init(Opts) ->
                 undefined -> undefined
             end,
             Data = #data{
-                port      = Port,
-                os_pid    = OsPid,
-                ref       = Ref,
-                owner     = Owner,
-                owner_mon = OwnerMon,
-                line_buf  = <<>>,
-                opts      = Opts,
-                model     = undefined,
-                backend   = undefined
+                port        = Port,
+                closed_port = undefined,
+                os_pid      = OsPid,
+                ref         = Ref,
+                owner       = Owner,
+                owner_mon   = OwnerMon,
+                line_buf    = <<>>,
+                opts        = Opts,
+                model       = undefined,
+                backend     = undefined
             },
             {ok, spawning, Data};
         {ok, _NotString} ->
@@ -202,12 +210,22 @@ ready({call, From}, {send, Msg}, #data{port = Port} = Data) ->
         undefined ->
             {keep_state_and_data, [{reply, From, {error, not_ready}}]};
         _ ->
-            Encoded = loom_protocol:encode(Msg),
-            try port_command(Port, Encoded) of
-                true -> {keep_state, Data, [{reply, From, ok}]}
+            try loom_protocol:encode(Msg) of
+                Encoded ->
+                    try port_command(Port, Encoded) of
+                        true -> {keep_state, Data, [{reply, From, ok}]}
+                    catch
+                        error:badarg ->
+                            %% Port died — transition to shutting_down
+                            logger:warning("loom_port: port_command failed in ready state, "
+                                           "port likely closed"),
+                            {next_state, shutting_down, Data,
+                             [{reply, From, {error, port_closed}}]}
+                    end
             catch
-                error:badarg ->
-                    {keep_state_and_data, [{reply, From, {error, not_ready}}]}
+                error:EncodeReason ->
+                    {keep_state_and_data,
+                     [{reply, From, {error, {encode_failed, EncodeReason}}}]}
             end
     end.
 
@@ -224,7 +242,9 @@ shutting_down(enter, _OldState, #data{port = Port, opts = Opts} = Data) ->
         true ->
             ShutdownCmd = loom_protocol:encode({shutdown}),
             try port_command(Port, ShutdownCmd)
-            catch error:badarg -> ok
+            catch error:badarg ->
+                logger:info("loom_port: shutdown command failed (port already closed), "
+                            "will escalate after timeout")
             end;
         false ->
             ok
@@ -234,9 +254,12 @@ shutting_down(state_timeout, shutdown_timeout, #data{port = Port} = Data) ->
     %% Level 2: port_close (EOF stdin, triggers watchdog in adapter)
     case Port =/= undefined andalso erlang:port_info(Port) =/= undefined of
         true ->
-            port_close(Port),
+            try port_close(Port)
+            catch error:badarg ->
+                logger:debug("loom_port: port_close failed (port already closed)")
+            end,
             PostCloseTimeout = maps:get(post_close_timeout_ms, Data#data.opts, 5000),
-            {keep_state, Data#data{port = undefined},
+            {keep_state, Data#data{port = undefined, closed_port = Port},
              [{state_timeout, PostCloseTimeout, post_close_timeout}]};
         false ->
             %% Port already closed, nothing more we can do
@@ -249,10 +272,17 @@ shutting_down(state_timeout, post_close_timeout, Data) ->
                    [Data#data.os_pid]),
     notify_owner({loom_port_exit, Data#data.ref, killed}, Data),
     {stop, {shutdown, post_close_timeout}};
+%% Match exit_status from active port OR closed port (late arrival after port_close)
 shutting_down(info, {Port, {exit_status, Status}}, #data{port = Port} = Data) ->
     handle_port_exit(Status, Data);
-shutting_down(info, {Port, {data, _LineData}}, #data{port = Port}) ->
-    %% Ignore data during shutdown
+shutting_down(info, {ClosedPort, {exit_status, Status}},
+              #data{closed_port = ClosedPort} = Data) when ClosedPort =/= undefined ->
+    handle_port_exit(Status, Data);
+%% Ignore data during shutdown — from active or closed port
+shutting_down(info, {Port, {data, _}}, #data{port = Port}) ->
+    keep_state_and_data;
+shutting_down(info, {ClosedPort, {data, _}},
+              #data{closed_port = ClosedPort}) when ClosedPort =/= undefined ->
     keep_state_and_data;
 shutting_down(info, {'DOWN', MonRef, process, _, _}, #data{owner_mon = MonRef}) ->
     %% Owner already dead, we're shutting down anyway
@@ -276,7 +306,10 @@ terminate(_Reason, _State, #data{port = Port, owner_mon = OwnerMon}) ->
     %% Cleanup: close port if still open, demonitor owner
     case Port =/= undefined andalso erlang:port_info(Port) =/= undefined of
         true ->
-            try port_close(Port) catch error:badarg -> ok end;
+            try port_close(Port)
+            catch error:badarg ->
+                logger:debug("loom_port: port_close failed in terminate (port already closed)")
+            end;
         false ->
             ok
     end,
@@ -333,8 +366,10 @@ dispatch_line(Line, State, #data{ref = Ref} = Data) ->
         {ok, Msg} when State =:= ready ->
             notify_owner({loom_port_msg, Ref, Msg}, Data),
             {keep_state, Data};
-        {ok, _Msg} ->
-            %% Message in unexpected state, ignore
+        {ok, Msg} ->
+            %% Message in unexpected state — log and drop
+            logger:debug("loom_port: dropping ~p message in ~p state",
+                         [element(1, Msg), State]),
             {keep_state, Data};
         {error, Reason} ->
             notify_owner({loom_port_error, Ref, {decode_error, Reason}}, Data),
@@ -352,8 +387,15 @@ handle_port_exit(Status, Data) ->
 handle_owner_down(Data) ->
     {next_state, shutting_down, Data}.
 
-%% @doc Send a message to the owner process.
+%% @doc Send a message to the owner process. Logs a warning if the owner is dead.
 -spec notify_owner(term(), #data{}) -> ok.
 notify_owner(Msg, #data{owner = Owner}) ->
-    Owner ! Msg,
-    ok.
+    case is_process_alive(Owner) of
+        true ->
+            Owner ! Msg,
+            ok;
+        false ->
+            logger:warning("loom_port: cannot notify dead owner ~p with ~p",
+                           [Owner, Msg]),
+            ok
+    end.

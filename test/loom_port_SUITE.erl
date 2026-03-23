@@ -29,7 +29,8 @@
     owner_death_test/1,
     concurrent_sends_test/1,
     startup_delay_test/1,
-    shutdown_during_loading_test/1
+    shutdown_during_loading_test/1,
+    direct_ready_no_heartbeat_test/1
 ]).
 
 %%====================================================================
@@ -44,7 +45,8 @@ all() ->
         owner_death_test,
         concurrent_sends_test,
         startup_delay_test,
-        shutdown_during_loading_test
+        shutdown_during_loading_test,
+        direct_ready_no_heartbeat_test
     ].
 
 init_per_suite(Config) ->
@@ -337,6 +339,35 @@ collect_all_messages(Ref, N, Timeout) ->
         ct:fail(io_lib:format(
             "collect_all_messages: timed out waiting for message ~w of ~w",
             [N, N]))
+    end.
+
+%% @doc Adapter that sends ready immediately (no heartbeat), testing
+%% the direct spawning → ready transition.
+direct_ready_no_heartbeat_test(_Config) ->
+    %% Create a tiny Python script that sends ready immediately, then reads stdin
+    Script = "import sys, json; "
+             "sys.stdout.write(json.dumps({'type':'ready','model':'direct','backend':'test'}) + '\\n'); "
+             "sys.stdout.flush(); "
+             "[sys.stdin.readline() for _ in iter(int, 1)]",
+    Opts = #{
+        command => python_cmd(),
+        args => ["-c", Script],
+        owner => self(),
+        spawn_timeout_ms => 5000,
+        heartbeat_timeout_ms => 5000,
+        shutdown_timeout_ms => 2000,
+        post_close_timeout_ms => 2000,
+        max_line_length => 1048576
+    },
+    {ok, Pid} = loom_port:start_link(Opts),
+    Ref = wait_ready(5000),
+    %% Verify it came with the direct model/backend
+    receive after 0 -> ok end,
+    ?assertEqual(ready, loom_port:get_state(Pid)),
+    loom_port:shutdown(Pid),
+    receive
+        {loom_port_exit, Ref, _Code} -> ok
+    after 10000 -> ct:fail("No exit after shutdown")
     end.
 
 %% @doc Poll loom_port:get_state/1 until it returns the expected State or

@@ -226,6 +226,41 @@ noeol_accumulation_test() ->
     loom_port:shutdown(Pid),
     wait_for_exit().
 
+%% --- Init validation tests ---
+
+missing_command_test() ->
+    process_flag(trap_exit, true),
+    ?assertMatch({error, _}, loom_port:start_link(#{})).
+
+invalid_command_test() ->
+    process_flag(trap_exit, true),
+    ?assertMatch({error, _}, loom_port:start_link(#{command => 42})).
+
+%% --- Heartbeat timeout in loading state ---
+
+heartbeat_timeout_in_loading_test() ->
+    %% Use mock adapter with long startup delay but heartbeat interval
+    %% LONGER than our timeout — simulates "adapter sent one heartbeat
+    %% then stalled." We use a short timeout to make the test fast.
+    process_flag(trap_exit, true),
+    Opts = (default_opts())#{
+        args => [mock_adapter_path(), "--startup-delay", "30",
+                 "--heartbeat-interval", "60"],
+        spawn_timeout_ms => 10000,
+        heartbeat_timeout_ms => 1500,
+        shutdown_timeout_ms => 1000,
+        post_close_timeout_ms => 1000
+    },
+    {ok, Pid} = loom_port:start_link(Opts),
+    %% First heartbeat arrives immediately → transitions to loading
+    %% Next heartbeat would be at 60s, but timeout is 1.5s
+    receive
+        {loom_port_timeout, _Ref} -> ok
+    after 10000 ->
+        error(heartbeat_timeout_in_loading_never_fired)
+    end,
+    ?assertNot(is_process_alive(Pid)).
+
 %% @doc Collect N {loom_port_msg, Ref, _} messages within Timeout ms each.
 collect_messages(_Ref, 0, _Timeout) ->
     [];

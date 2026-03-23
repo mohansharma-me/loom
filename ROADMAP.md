@@ -29,7 +29,7 @@ Standards and practices that apply across all phases.
 
 ### Core Communication
 - [x] Erlang-Python JSON wire protocol with encoder/decoder — [#4](https://github.com/mohansharma-me/loom/issues/4) `P0-04`
-- [x] `loom_port` GenServer for Port-based subprocess management — [#5](https://github.com/mohansharma-me/loom/issues/5) `P0-05`
+- [x] `loom_port` gen_statem for Port-based subprocess management — [#5](https://github.com/mohansharma-me/loom/issues/5) `P0-05`
 - [ ] `loom_adapter.py` wrapping vLLM AsyncLLMEngine — [#6](https://github.com/mohansharma-me/loom/issues/6) `P0-06`
 
 ### Supervision & Monitoring

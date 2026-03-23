@@ -215,8 +215,10 @@ def main():
     while True:
         try:
             raw_line = line_queue.get()
-        except Exception:
-            break
+        except Exception as e:
+            print(f"[mock_adapter] ERROR: line_queue.get() failed: {e}",
+                  file=sys.stderr)
+            os._exit(2)
         line = raw_line.decode(errors='replace').strip()
         if not line:
             continue
