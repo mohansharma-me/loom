@@ -185,6 +185,21 @@ class MockAdapterTest(unittest.TestCase):
         stdout, stderr = proc.communicate(input="", timeout=5)
         self.assertEqual(proc.returncode, 0)
 
+    def test_shutdown_exits_cleanly(self):
+        """Verify shutdown command causes clean exit."""
+        proc = subprocess.Popen(
+            ['python3', ADAPTER_PATH],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout, stderr = proc.communicate(
+            input=json.dumps({"type": "shutdown"}) + '\n', timeout=5
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("shutdown requested", stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

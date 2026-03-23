@@ -9,6 +9,7 @@ Uses only Python stdlib — no external dependencies.
 """
 import json
 import sys
+import traceback
 
 
 # ASSUMPTION: Fixed mock tokens simulate a generate response; real adapter will stream actual model output.
@@ -115,14 +116,17 @@ def main():
                 sys.stdout.write(json.dumps(resp) + '\n')
             sys.stdout.flush()
         except Exception as e:
+            print(f"[mock_adapter] ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
             error_resp = {"type": "error", "code": "internal_error",
-                          "message": f"internal adapter error: {e}"}
+                          "message": f"internal adapter error: {type(e).__name__}: {e}"}
             try:
                 sys.stdout.write(json.dumps(error_resp) + '\n')
                 sys.stdout.flush()
-            except Exception:
-                pass
-            print(f"[mock_adapter] ERROR: {e}", file=sys.stderr)
+            except Exception as write_err:
+                print(f"[mock_adapter] FATAL: failed to write error response: {write_err}",
+                      file=sys.stderr)
+                sys.exit(1)
     print("[mock_adapter] stdin closed, shutting down", file=sys.stderr)
 
 

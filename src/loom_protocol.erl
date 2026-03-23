@@ -29,10 +29,10 @@
   | {done, Id :: binary(), TokensGenerated :: non_neg_integer(), TimeMs :: non_neg_integer()}
   | {error, Id :: binary() | undefined, Code :: binary(), Message :: binary()}
   | {health_response, Status :: binary(), GpuUtil :: float(), MemUsedGb :: float(), MemTotalGb :: float()}
-  | {memory_response, MemoryInfo :: #{binary() => float() | term()}}
+  | {memory_response, MemoryInfo :: #{binary() => number()}}
   | {ready, Model :: binary(), Backend :: binary()}.
 
--type buffer() :: binary().
+-opaque buffer() :: binary().
 
 -type decode_error() ::
     {invalid_json, term()}
@@ -62,19 +62,27 @@ encode({generate, Id, Prompt, Params}) ->
 
 -spec decode(binary()) -> {ok, inbound_msg()} | {error, decode_error()}.
 decode(Bin) ->
-    %% ASSUMPTION: loom_json:decode/1 raises an exception on invalid JSON rather
-    %% than returning an error tuple, so try/catch is required here.
-    try loom_json:decode(Bin) of
-        Map when is_map(Map) ->
+    case parse_json(Bin) of
+        {ok, Map} when is_map(Map) ->
             case maps:get(<<"type">>, Map, undefined) of
                 undefined -> {error, missing_type};
                 Type -> decode_by_type(Type, Map)
             end;
-        _NotMap ->
-            {error, missing_type}
+        {ok, _NotMap} ->
+            {error, missing_type};
+        {error, _} = Err ->
+            Err
+    end.
+
+%% ASSUMPTION: loom_json:decode/1 raises an exception on invalid JSON rather
+%% than returning an error tuple, so try/catch is required here. This is
+%% separated from decode/1 so decoder bugs don't get mislabeled as invalid_json.
+-spec parse_json(binary()) -> {ok, term()} | {error, decode_error()}.
+parse_json(Bin) ->
+    try loom_json:decode(Bin) of
+        Result -> {ok, Result}
     catch
-        _:Reason ->
-            {error, {invalid_json, Reason}}
+        _:Reason -> {error, {invalid_json, Reason}}
     end.
 
 -spec decode_by_type(binary(), map()) -> {ok, inbound_msg()} | {error, decode_error()}.
@@ -201,8 +209,13 @@ decode_memory(Map) ->
     case validate_required_numbers(Type, Map, Required) of
         {error, _} = Err -> Err;
         ok ->
-            %% Strip the "type" key, keep everything else
-            Info = maps:remove(<<"type">>, Map),
+            %% Strip the "type" key, coerce required numeric fields to float
+            Info0 = maps:remove(<<"type">>, Map),
+            Info = Info0#{
+                <<"total_gb">> := to_float(maps:get(<<"total_gb">>, Info0)),
+                <<"used_gb">> := to_float(maps:get(<<"used_gb">>, Info0)),
+                <<"available_gb">> := to_float(maps:get(<<"available_gb">>, Info0))
+            },
             {ok, {memory_response, Info}}
     end.
 
@@ -236,6 +249,9 @@ new_buffer() ->
 terminate_line(JsonBin) ->
     <<JsonBin/binary, $\n>>.
 
+%% @doc Feed raw bytes into the line buffer. Returns complete lines and the
+%% remaining buffer. NOTE: Consecutive newlines produce empty lines (<<>>)
+%% in the output — callers should filter these before passing to decode/1.
 -spec feed(binary(), buffer()) -> {[binary()], buffer()}.
 feed(Data, Buf) ->
     Combined = <<Buf/binary, Data/binary>>,

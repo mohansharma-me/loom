@@ -298,7 +298,7 @@ Phase 0-1 uses stdio Port with line-delimited JSON:
 → {"type": "memory"}
 ← {"type": "token", "id": "req-001", "token_id": 1234, "text": "the", "finished": false}
 ← {"type": "done", "id": "req-001", "tokens_generated": 47, "time_ms": 1820}
-← {"type": "health", "status": "ok", "gpu_util": 0.73, "mem_used_gb": 62.4}
+← {"type": "health", "status": "ok", "gpu_util": 0.73, "mem_used_gb": 62.4, "mem_total_gb": 80.0}
 ```
 
 Phase 4+ migrates to gRPC (multiplexed, Protobuf, production-grade) while retaining Port

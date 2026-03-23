@@ -195,6 +195,17 @@ decode_token_bad_token_id_test() ->
         loom_protocol:decode(Json)
     ).
 
+-spec decode_token_negative_token_id_test() -> any().
+decode_token_negative_token_id_test() ->
+    Json = loom_json:encode(#{
+        type => <<"token">>, id => <<"r1">>,
+        token_id => -1, text => <<"x">>, finished => false
+    }),
+    ?assertEqual(
+        {error, {invalid_field, <<"token_id">>, integer, -1}},
+        loom_protocol:decode(Json)
+    ).
+
 %% --- Decode done tests ---
 
 -spec decode_done_test() -> any().
@@ -340,7 +351,21 @@ decode_memory_response_test() ->
     {ok, {memory_response, Info}} = loom_protocol:decode(Json),
     ?assertEqual(80.0, maps:get(<<"total_gb">>, Info)),
     ?assertEqual(62.4, maps:get(<<"used_gb">>, Info)),
-    ?assertEqual(17.6, maps:get(<<"available_gb">>, Info)).
+    ?assertEqual(17.6, maps:get(<<"available_gb">>, Info)),
+    %% Verify "type" key is stripped from the returned map
+    ?assertEqual(false, maps:is_key(<<"type">>, Info)).
+
+-spec decode_memory_response_integer_coercion_test() -> any().
+decode_memory_response_integer_coercion_test() ->
+    %% JSON integers should be coerced to floats (consistent with health_response)
+    Json = loom_json:encode(#{
+        type => <<"memory">>,
+        total_gb => 80, used_gb => 0, available_gb => 80
+    }),
+    {ok, {memory_response, Info}} = loom_protocol:decode(Json),
+    ?assertEqual(80.0, maps:get(<<"total_gb">>, Info)),
+    ?assertEqual(0.0, maps:get(<<"used_gb">>, Info)),
+    ?assertEqual(80.0, maps:get(<<"available_gb">>, Info)).
 
 -spec decode_memory_response_extra_keys_test() -> any().
 decode_memory_response_extra_keys_test() ->
