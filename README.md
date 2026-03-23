@@ -93,7 +93,7 @@ You should see the supervision tree start, the Python adapter launch vLLM, and t
 
 ### 4. Send a Request
 
-Loom exposes an OpenAI-compatible API. Use any OpenAI client or plain `curl`:
+Loom exposes both OpenAI-compatible (`/v1/chat/completions`) and Anthropic-compatible (`/v1/messages`) APIs. Use any OpenAI or Anthropic SDK client, or plain `curl`:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \

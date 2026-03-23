@@ -38,6 +38,9 @@ Standards and practices that apply across all phases.
 - [ ] `/v1/chat/completions` endpoint with SSE streaming (Cowboy) — [#11](https://github.com/mohansharma-me/loom/issues/11) `P0-10`
 - [ ] Wire all components into application supervisor tree — [#12](https://github.com/mohansharma-me/loom/issues/12) `P0-11`
 
+### API Endpoints
+- [ ] `/v1/messages` endpoint — Anthropic Messages API compatibility — [#64](https://github.com/mohansharma-me/loom/issues/64) `P0-16`
+
 ### Validation
 - [ ] Crash recovery test: kill engine → auto-restart → system recovers — [#13](https://github.com/mohansharma-me/loom/issues/13) `P0-12`
 - [ ] Port overhead benchmark (target: <1ms per message) — [#14](https://github.com/mohansharma-me/loom/issues/14) `P0-13`
@@ -130,13 +133,13 @@ Standards and practices that apply across all phases.
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 3 | 0 | 0 | 3 |
-| Phase 0 | 15 | 4 | 0 | 11 |
+| Phase 0 | 16 | 4 | 0 | 12 |
 | Phase 1 | 12 | 0 | 0 | 12 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **51** | **4** | **0** | **47** |
+| **Total** | **52** | **4** | **0** | **48** |
 
 ## What's Next
 

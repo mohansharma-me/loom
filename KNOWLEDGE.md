@@ -508,7 +508,7 @@ Phases at a glance: Phase 0 (Foundation & PoC) → Phase 1 (Multi-Engine & Routi
 5. **Observable by default.** Every process inspectable, every metric exposed.
 6. **Progressive complexity.** Phase 0 works on one GPU. Each phase adds capability without
    requiring previous phases to change.
-7. **OpenAI-compatible API.** Zero client-side changes. Loom is transparent to callers.
+7. **OpenAI- and Anthropic-compatible APIs.** Zero client-side changes. Loom is transparent to callers.
 8. **AI-first development.** All code authored by AI coding agents, guided by human architect.
 
 ---
