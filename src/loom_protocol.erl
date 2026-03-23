@@ -60,8 +60,44 @@ encode({generate, Id, Prompt, Params}) ->
     })).
 
 -spec decode(binary()) -> {ok, inbound_msg()} | {error, decode_error()}.
-decode(_Bin) ->
-    erlang:error(not_implemented).
+decode(Bin) ->
+    %% ASSUMPTION: loom_json:decode/1 raises an exception on invalid JSON rather
+    %% than returning an error tuple, so try/catch is required here.
+    try loom_json:decode(Bin) of
+        Map when is_map(Map) ->
+            case maps:get(<<"type">>, Map, undefined) of
+                undefined -> {error, missing_type};
+                Type -> decode_by_type(Type, Map)
+            end;
+        _NotMap ->
+            {error, missing_type}
+    catch
+        _:Reason ->
+            {error, {invalid_json, Reason}}
+    end.
+
+-spec decode_by_type(binary(), map()) -> {ok, inbound_msg()} | {error, decode_error()}.
+decode_by_type(<<"token">>, Map) -> decode_token(Map);
+decode_by_type(<<"done">>, Map) -> decode_done(Map);
+decode_by_type(<<"error">>, Map) -> decode_error_msg(Map);
+decode_by_type(<<"health">>, Map) -> decode_health(Map);
+decode_by_type(<<"memory">>, Map) -> decode_memory(Map);
+decode_by_type(<<"ready">>, Map) -> decode_ready(Map);
+decode_by_type(Type, _Map) -> {error, {unknown_type, Type}}.
+
+%% Stubs for per-type decoders (implemented in subsequent tasks)
+-spec decode_token(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
+decode_token(_) -> erlang:error(not_implemented).
+-spec decode_done(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
+decode_done(_) -> erlang:error(not_implemented).
+-spec decode_error_msg(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
+decode_error_msg(_) -> erlang:error(not_implemented).
+-spec decode_health(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
+decode_health(_) -> erlang:error(not_implemented).
+-spec decode_memory(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
+decode_memory(_) -> erlang:error(not_implemented).
+-spec decode_ready(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
+decode_ready(_) -> erlang:error(not_implemented).
 
 -spec new_buffer() -> buffer().
 new_buffer() ->

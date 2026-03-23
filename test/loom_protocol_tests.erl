@@ -121,3 +121,31 @@ encode_generate_partial_params_test() ->
 encode_bad_input_crashes_test() ->
     ?assertError(function_clause, loom_protocol:encode({bogus})),
     ?assertError(function_clause, loom_protocol:encode(not_a_tuple)).
+
+%% --- Decode error tests ---
+
+-spec decode_invalid_json_test() -> any().
+decode_invalid_json_test() ->
+    ?assertMatch({error, {invalid_json, _}}, loom_protocol:decode(<<"not json">>)).
+
+-spec decode_empty_input_test() -> any().
+decode_empty_input_test() ->
+    ?assertMatch({error, {invalid_json, _}}, loom_protocol:decode(<<>>)).
+
+-spec decode_missing_type_test() -> any().
+decode_missing_type_test() ->
+    Json = loom_json:encode(#{foo => bar}),
+    ?assertEqual({error, missing_type}, loom_protocol:decode(Json)).
+
+-spec decode_unknown_type_test() -> any().
+decode_unknown_type_test() ->
+    Json = loom_json:encode(#{type => <<"bogus">>}),
+    ?assertEqual({error, {unknown_type, <<"bogus">>}}, loom_protocol:decode(Json)).
+
+-spec decode_not_object_test() -> any().
+decode_not_object_test() ->
+    ?assertEqual({error, missing_type}, loom_protocol:decode(<<"42">>)).
+
+-spec decode_array_not_object_test() -> any().
+decode_array_not_object_test() ->
+    ?assertEqual({error, missing_type}, loom_protocol:decode(<<"[1,2,3]">>)).
