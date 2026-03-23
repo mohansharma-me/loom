@@ -200,6 +200,32 @@ wait_for_exit() ->
         error(wait_for_exit_timeout)
     end.
 
+%% --- noeol edge case ---
+
+noeol_accumulation_test() ->
+    %% Use a small max_line_length to trigger noeol fragments.
+    %% The heartbeat/ready JSON messages are ~70+ bytes, so 64 bytes
+    %% will force the Port to split them into noeol + eol fragments.
+    process_flag(trap_exit, true),
+    Opts = (default_opts())#{max_line_length => 64},
+    {ok, Pid} = loom_port:start_link(Opts),
+    %% If noeol handling works, we should still reach ready state
+    receive
+        {loom_port_ready, _Ref, <<"mock">>, <<"mock">>} -> ok
+    after 10000 ->
+        error(noeol_test_timeout_waiting_for_ready)
+    end,
+    ?assertEqual(ready, loom_port:get_state(Pid)),
+    %% Also verify send/receive works with fragments
+    ok = loom_port:send(Pid, {health}),
+    receive
+        {loom_port_msg, _, {health_response, _, _, _, _}} -> ok
+    after 5000 ->
+        error(noeol_test_timeout_waiting_for_health)
+    end,
+    loom_port:shutdown(Pid),
+    wait_for_exit().
+
 %% @doc Collect N {loom_port_msg, Ref, _} messages within Timeout ms each.
 collect_messages(_Ref, 0, _Timeout) ->
     [];
