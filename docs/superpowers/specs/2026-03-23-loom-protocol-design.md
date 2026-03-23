@@ -189,8 +189,8 @@ No validation. Crash on bad input. A malformed tuple from internal code is a bug
   | {memory_response, MemoryInfo :: #{binary() => float() | term()}}
   | {ready, Model :: binary(), Backend :: binary()}.
 
-%% Buffer (opaque)
--opaque buffer() :: binary().
+%% Buffer
+-type buffer() :: binary().
 
 %% Decode errors
 -type decode_error() ::
