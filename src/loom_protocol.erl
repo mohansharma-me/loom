@@ -30,7 +30,8 @@
   | {error, Id :: binary() | undefined, Code :: binary(), Message :: binary()}
   | {health_response, Status :: binary(), GpuUtil :: float(), MemUsedGb :: float(), MemTotalGb :: float()}
   | {memory_response, MemoryInfo :: #{binary() => number()}}
-  | {ready, Model :: binary(), Backend :: binary()}.
+  | {ready, Model :: binary(), Backend :: binary()}
+  | {heartbeat, Status :: binary(), Detail :: binary()}.
 
 -opaque buffer() :: binary().
 
@@ -92,6 +93,7 @@ decode_by_type(<<"error">>, Map) -> decode_error_msg(Map);
 decode_by_type(<<"health">>, Map) -> decode_health(Map);
 decode_by_type(<<"memory">>, Map) -> decode_memory(Map);
 decode_by_type(<<"ready">>, Map) -> decode_ready(Map);
+decode_by_type(<<"heartbeat">>, Map) -> decode_heartbeat(Map);
 decode_by_type(Type, _Map) -> {error, {unknown_type, Type}}.
 
 %% --- Validation helpers ---
@@ -238,6 +240,24 @@ decode_ready(Map) ->
     ], fun([Model, Backend]) ->
         {ok, {ready, Model, Backend}}
     end).
+
+-spec decode_heartbeat(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
+decode_heartbeat(Map) ->
+    %% ASSUMPTION: status is required; detail is optional and defaults to <<"">>
+    %% when absent. A present but non-binary detail triggers {invalid_field, ...}.
+    Detail = case maps:get(<<"detail">>, Map, undefined) of
+        undefined -> {ok, <<"">>};
+        V when is_binary(V) -> {ok, V};
+        Other -> {error, {invalid_field, <<"detail">>, binary, Other}}
+    end,
+    case {require(<<"status">>, <<"heartbeat">>, Map), Detail} of
+        {{error, _} = Err, _} -> Err;
+        {_, {error, _} = Err} -> Err;
+        {{ok, Status}, {ok, _}} when not is_binary(Status) ->
+            {error, {invalid_field, <<"status">>, binary, Status}};
+        {{ok, Status}, {ok, D}} ->
+            {ok, {heartbeat, Status, D}}
+    end.
 
 -spec new_buffer() -> buffer().
 new_buffer() ->

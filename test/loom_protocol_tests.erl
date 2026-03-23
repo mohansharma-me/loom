@@ -447,3 +447,50 @@ decode_done_bad_type_test() ->
         {error, {invalid_field, <<"tokens_generated">>, integer, _}},
         loom_protocol:decode(Json)
     ).
+
+%% --- Decode heartbeat tests ---
+
+-spec decode_heartbeat_test() -> any().
+decode_heartbeat_test() ->
+    Json = loom_json:encode(#{
+        type => <<"heartbeat">>,
+        status => <<"loading">>,
+        detail => <<"50% done">>
+    }),
+    ?assertEqual(
+        {ok, {heartbeat, <<"loading">>, <<"50% done">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_heartbeat_no_detail_test() -> any().
+decode_heartbeat_no_detail_test() ->
+    Json = loom_json:encode(#{
+        type => <<"heartbeat">>,
+        status => <<"alive">>
+    }),
+    ?assertEqual(
+        {ok, {heartbeat, <<"alive">>, <<"">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_heartbeat_missing_status_test() -> any().
+decode_heartbeat_missing_status_test() ->
+    Json = loom_json:encode(#{
+        type => <<"heartbeat">>,
+        detail => <<"some detail">>
+    }),
+    ?assertEqual(
+        {error, {missing_field, <<"status">>, <<"heartbeat">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_heartbeat_bad_status_type_test() -> any().
+decode_heartbeat_bad_status_type_test() ->
+    Json = loom_json:encode(#{
+        type => <<"heartbeat">>,
+        status => 42
+    }),
+    ?assertMatch(
+        {error, {invalid_field, <<"status">>, binary, _}},
+        loom_protocol:decode(Json)
+    ).
