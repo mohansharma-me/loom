@@ -55,5 +55,15 @@ new_buffer() ->
     <<>>.
 
 -spec feed(binary(), buffer()) -> {[binary()], buffer()}.
-feed(_Data, _Buf) ->
-    erlang:error(not_implemented).
+feed(Data, Buf) ->
+    Combined = <<Buf/binary, Data/binary>>,
+    case binary:split(Combined, <<"\n">>, [global]) of
+        [NoNewline] ->
+            {[], NoNewline};
+        Parts ->
+            %% ASSUMPTION: binary:split with [global] always produces at least 2
+            %% elements when a delimiter is found; the last element is the
+            %% remainder after the final \n (empty binary if input ends with \n).
+            {Lines, [Remainder]} = lists:split(length(Parts) - 1, Parts),
+            {Lines, Remainder}
+    end.
