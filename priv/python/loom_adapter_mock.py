@@ -39,13 +39,8 @@ class LoomAdapterMock(LoomAdapterBase):
     All heavy-compute methods are replaced with lightweight stubs.
     """
 
-    def __init__(self, args):
-        super().__init__(args)
-        # ASSUMPTION: cancelled_requests is a plain set rather than a
-        # thread-safe structure because it is only accessed from the
-        # asyncio event loop (single thread).  cancel_request() adds an
-        # ID here; generate() checks it between tokens.
-        self.cancelled_requests: set = set()
+    # ASSUMPTION: cancelled_requests is inherited from LoomAdapterBase
+    # and cleaned up centrally in _dispatch_command's finally block.
 
     # -------------------------------------------------------------------------
     # CLI args
@@ -61,6 +56,24 @@ class LoomAdapterMock(LoomAdapterBase):
             help=(
                 "Seconds to sleep inside load_model() to simulate slow "
                 "model loading (default: 0.0)."
+            ),
+        )
+        parser.add_argument(
+            "--token-delay",
+            type=float,
+            default=0.0,
+            help=(
+                "Seconds to sleep between each token in generate() "
+                "(default: 0.0). Useful for testing cancel-during-generate."
+            ),
+        )
+        parser.add_argument(
+            "--fail-on-generate",
+            action="store_true",
+            default=False,
+            help=(
+                "Raise RuntimeError from generate() to test error handling "
+                "(default: off)."
             ),
         )
         parser.add_argument(
@@ -119,8 +132,12 @@ class LoomAdapterMock(LoomAdapterBase):
         else:
             tokens_to_send = MOCK_TOKENS
 
+        if getattr(self.args, 'fail_on_generate', False):
+            raise RuntimeError("Simulated generate failure (--fail-on-generate)")
+
         start = time.monotonic()
         tokens_sent = 0
+        token_delay = getattr(self.args, 'token_delay', 0.0)
 
         for token_text in tokens_to_send:
             # Check cancellation before each token
@@ -131,13 +148,15 @@ class LoomAdapterMock(LoomAdapterBase):
                 request_id=request_id,
                 token_id=tokens_sent + 1,  # 1-based sequence counter
                 text=token_text,
-                finished=False,
             )
             tokens_sent += 1
 
             # Yield to the event loop so other coroutines (health, cancel,
             # additional generate requests) can run between tokens.
-            await asyncio.sleep(0)
+            if token_delay > 0:
+                await asyncio.sleep(token_delay)
+            else:
+                await asyncio.sleep(0)
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
         self.send_done(

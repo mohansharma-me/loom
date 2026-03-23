@@ -48,11 +48,8 @@ class VllmAdapter(LoomAdapterBase):
         # (no CUDA, pynvml missing) and callers fall back to zeroed stats.
         self._nvml_handle = None
 
-        # ASSUMPTION: cancelled_requests is a plain set (not thread-safe)
-        # because it is accessed only from the asyncio event loop (single
-        # thread).  cancel_request() adds an ID here; generate() checks it
-        # between async generator yields.
-        self.cancelled_requests: set = set()
+        # ASSUMPTION: cancelled_requests is inherited from LoomAdapterBase
+        # and cleaned up centrally in _dispatch_command's finally block.
 
     # -------------------------------------------------------------------------
     # CLI args
@@ -84,8 +81,8 @@ class VllmAdapter(LoomAdapterBase):
             type=float,
             default=0.9,
             help=(
-                "Fraction of GPU memory reserved for the model's KV cache "
-                "(default: 0.9)."
+                "Fraction of total GPU memory vLLM is allowed to use "
+                "(for model weights, KV cache, and overheads) (default: 0.9)."
             ),
         )
         parser.add_argument(
@@ -192,6 +189,11 @@ class VllmAdapter(LoomAdapterBase):
             frequency_penalty=params.get("frequency_penalty", 0.0),
         )
 
+        if self.engine is None:
+            self.send_error(request_id, "engine_not_ready",
+                            "engine not yet initialized")
+            return
+
         start = time.monotonic()
         tokens_sent = 0
         prev_text = ""
@@ -200,37 +202,44 @@ class VllmAdapter(LoomAdapterBase):
         # RequestOutput objects.  Each RequestOutput has outputs[0].text
         # containing the CUMULATIVE decoded text so far.  We diff consecutive
         # values to produce incremental token text for the wire protocol.
-        async for request_output in self.engine.generate(
-            prompt, sampling_params, request_id
-        ):
-            # Cooperative cancellation: check before processing each output.
-            if request_id in self.cancelled_requests:
-                logger.info("request %s cancelled, stopping generation", request_id)
-                break
+        #
+        # ASSUMPTION: tokens_sent counts the number of non-empty incremental
+        # text diffs, which may differ from the actual model-level token count
+        # when vLLM batches multiple tokens in a single RequestOutput. For P0
+        # this is acceptable; P1+ can use request_output.outputs[0].token_ids
+        # for accurate token counting.
+        try:
+            async for request_output in self.engine.generate(
+                prompt, sampling_params, request_id
+            ):
+                # Cooperative cancellation: check before processing each output.
+                if request_id in self.cancelled_requests:
+                    logger.info("request %s cancelled, stopping generation",
+                                request_id)
+                    break
 
-            if not request_output.outputs:
-                continue
+                if not request_output.outputs:
+                    continue
 
-            current_text = request_output.outputs[0].text
-            # Compute the new text since the last output (incremental diff).
-            incremental = current_text[len(prev_text):]
-            prev_text = current_text
+                current_text = request_output.outputs[0].text
+                # Compute the new text since the last output (incremental diff).
+                incremental = current_text[len(prev_text):]
+                prev_text = current_text
 
-            if incremental:
-                tokens_sent += 1
-                self.send_token(
-                    request_id=request_id,
-                    token_id=tokens_sent,  # 1-based sequence counter
-                    text=incremental,
-                    finished=False,
-                )
-
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        self.send_done(
-            request_id=request_id,
-            tokens_generated=tokens_sent,
-            time_ms=elapsed_ms,
-        )
+                if incremental:
+                    tokens_sent += 1
+                    self.send_token(
+                        request_id=request_id,
+                        token_id=tokens_sent,
+                        text=incremental,
+                    )
+        finally:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            self.send_done(
+                request_id=request_id,
+                tokens_generated=tokens_sent,
+                time_ms=elapsed_ms,
+            )
 
     async def get_health(self) -> dict:
         """Return GPU health metrics using cached pynvml handle.
@@ -254,9 +263,16 @@ class VllmAdapter(LoomAdapterBase):
                 }
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning("pynvml health query failed: %s", exc)
+                return {
+                    "status": "degraded",
+                    "gpu_util": 0.0,
+                    "mem_used_gb": 0.0,
+                    "mem_total_gb": 0.0,
+                }
 
-        # ASSUMPTION: Zeroed stats are returned when NVML is unavailable.
-        # This keeps the protocol valid even on machines without CUDA.
+        # ASSUMPTION: Zeroed stats with status "ok" returned when NVML was
+        # never available (no CUDA). "degraded" is used when NVML was available
+        # but a runtime query failed.
         return {
             "status": "ok",
             "gpu_util": 0.0,
@@ -277,18 +293,14 @@ class VllmAdapter(LoomAdapterBase):
             try:
                 import pynvml  # noqa: PLC0415
                 mem = pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
-                total_gb = mem.total / (1024 ** 3)
-                used_gb = mem.used / (1024 ** 3)
-                free_gb = mem.free / (1024 ** 3)
                 return {
-                    "total_gb": total_gb,
-                    "used_gb": used_gb,
-                    "available_gb": free_gb,
+                    "total_gb": mem.total / (1024 ** 3),
+                    "used_gb": mem.used / (1024 ** 3),
+                    "available_gb": mem.free / (1024 ** 3),
                 }
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning("pynvml memory query failed: %s", exc)
 
-        # ASSUMPTION: Zeroed stats are returned when NVML is unavailable.
         return {
             "total_gb": 0.0,
             "used_gb": 0.0,

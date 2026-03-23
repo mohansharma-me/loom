@@ -7,7 +7,7 @@ Subclasses implement 5 abstract async methods for engine-specific behavior.
 
 Uses only Python stdlib -- no external dependencies.
 
-Wire protocol (see KNOWLEDGE.md section 4.4):
+Wire protocol (extends KNOWLEDGE.md section 4.4 with lifecycle messages):
 
   Inbound (Erlang -> adapter stdin):
     {"type": "generate", "id": "<req>", "prompt": "...", "params": {...}}
@@ -39,8 +39,6 @@ import os
 import queue
 import sys
 import threading
-import time
-import traceback
 
 logger = logging.getLogger("loom_adapter")
 
@@ -77,9 +75,13 @@ class LoomAdapterBase(abc.ABC):
         # of sys.stdin -- no other code reads stdin.
         self._line_queue: queue.Queue = queue.Queue()
         # ASSUMPTION: _active_requests tracks in-flight generate request IDs.
-        # generate() adds the request_id on entry and removes it in a finally
-        # block to guarantee cleanup even on exception or cancellation.
+        # The base class manages insertion before calling generate() and
+        # removal in a finally block to guarantee cleanup even on exception.
         self._active_requests: set = set()
+        # ASSUMPTION: cancelled_requests is a protocol-level concern managed
+        # by the base class. Subclasses add IDs in cancel_request(); the base
+        # class cleans them up after generate() completes (in _dispatch_command).
+        self.cancelled_requests: set = set()
 
     # -------------------------------------------------------------------------
     # Abstract methods -- subclasses must implement all five
@@ -211,18 +213,26 @@ class LoomAdapterBase(abc.ABC):
         All protocol output MUST go through this method -- never write to stdout
         directly from adapter code.
 
+        If stdout is broken (BrokenPipeError/OSError), logs to stderr and
+        force-exits -- there is no way to recover if the protocol channel is dead.
+
         Args:
             msg: Dict to serialize as JSON. Must be JSON-serializable.
         """
-        sys.stdout.write(json.dumps(msg) + "\n")
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(json.dumps(msg) + "\n")
+            sys.stdout.flush()
+        except (BrokenPipeError, OSError) as exc:
+            logger.critical("stdout write failed (pipe broken?): %s", exc)
+            os._exit(1)
+        except (TypeError, ValueError) as exc:
+            logger.error("failed to serialize message: %s -- msg=%r", exc, msg)
 
     def send_token(
         self,
         request_id: str,
         token_id: int,
         text: str,
-        finished: bool = False,
     ) -> None:
         """Send a token message to loom_port.
 
@@ -237,17 +247,13 @@ class LoomAdapterBase(abc.ABC):
             request_id: The generate request ID this token belongs to.
             token_id: 1-based sequence counter for this token.
             text: Decoded text for this token increment.
-            finished: Always False per streaming contract.
         """
-        # ASSUMPTION: finished is included in the message per the wire protocol
-        # spec but is always False for token messages. The done message signals
-        # end-of-generation. This matches mock_adapter.py behavior.
         self.send_msg({
             "type": "token",
             "id": request_id,
             "token_id": token_id,
             "text": text,
-            "finished": finished,
+            "finished": False,
         })
 
     def send_done(
@@ -291,9 +297,10 @@ class LoomAdapterBase(abc.ABC):
             code: Short machine-readable error code (e.g. "invalid_json").
             message: Human-readable error description.
         """
-        # ASSUMPTION: When request_id is None, json.dumps serializes it as null,
-        # which loom_protocol.erl decodes as the Erlang atom undefined. This is
-        # correct behavior. Never convert None to the string "None".
+        # ASSUMPTION: When request_id is None, json.dumps serializes it as null.
+        # loom_protocol.erl first decodes JSON null to the Erlang atom 'null'
+        # (OTP 27), then normalizes it to 'undefined' in decode_error_msg/1.
+        # Never convert None to the string "None".
         self.send_msg({
             "type": "error",
             "id": request_id,
@@ -323,7 +330,13 @@ class LoomAdapterBase(abc.ABC):
         reads stdin -- doing so would race with this thread.
         """
         while True:
-            line = sys.stdin.buffer.readline()
+            try:
+                line = sys.stdin.buffer.readline()
+            except Exception as exc:
+                logger.critical(
+                    "stdin watchdog read failed unexpectedly: %s", exc
+                )
+                os._exit(1)
             if not line:
                 # EOF -- stdin was closed; force-terminate immediately
                 logger.info("stdin closed (watchdog), force-exiting with code 1")
@@ -363,7 +376,7 @@ class LoomAdapterBase(abc.ABC):
         try:
             sys.stdout.reconfigure(line_buffering=True)
         except AttributeError:
-            # Python < 3.7 fallback -- reconfigure not available
+            # Defensive: stdout may be replaced by a non-TextIOWrapper in tests
             pass
 
         # ASSUMPTION: Warn if heartbeat interval >= loom_port timeout threshold.
@@ -405,15 +418,16 @@ class LoomAdapterBase(abc.ABC):
     async def _async_main(self) -> None:
         """Top-level async coroutine: startup sequence then command loop.
 
-        If load_model() raises any exception, logs the traceback to stderr and
-        calls os._exit(2). This prevents the adapter from entering the command
-        loop in a broken state.
+        If _startup_sequence() raises any exception (load_model failure or
+        protocol I/O error), logs the traceback to stderr and calls os._exit(2).
+        This prevents the adapter from entering the command loop in a broken state.
         """
         try:
             await self._startup_sequence()
         except Exception:
             logger.critical(
-                "load_model() failed -- unrecoverable, exiting with code 2",
+                "startup sequence failed (load_model or protocol I/O) "
+                "-- unrecoverable, exiting with code 2",
                 exc_info=True,
             )
             sys.stderr.flush()
@@ -516,11 +530,11 @@ class LoomAdapterBase(abc.ABC):
                 None, self._line_queue.get
             )
 
-            # Decode bytes to str, stripping trailing newline/whitespace
             try:
-                line = raw_line.decode(errors="replace").strip()
-            except Exception as exc:
-                logger.error("failed to decode line from queue: %s", exc)
+                line = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError as exc:
+                logger.warning("non-UTF-8 input received: %s", exc)
+                self.send_error(None, "invalid_encoding", f"non-UTF-8 input: {exc}")
                 continue
 
             if not line:
@@ -533,6 +547,14 @@ class LoomAdapterBase(abc.ABC):
             except json.JSONDecodeError as exc:
                 logger.warning("invalid JSON received: %s", exc)
                 self.send_error(None, "invalid_json", f"invalid JSON: {exc}")
+                continue
+
+            # Validate msg is a JSON object (dict), not array/string/number
+            if not isinstance(msg, dict):
+                self.send_error(
+                    None, "invalid_json",
+                    f"expected JSON object, got {type(msg).__name__}",
+                )
                 continue
 
             # Dispatch the command
@@ -575,9 +597,15 @@ class LoomAdapterBase(abc.ABC):
                 return
             prompt = msg.get("prompt", "")
             params = msg.get("params", {})
-            # ASSUMPTION: generate() tracks request_id in _active_requests.
-            # The base class manages insertion before calling generate() and
-            # removal in a finally block to guarantee cleanup.
+            if not isinstance(params, dict):
+                self.send_error(
+                    request_id, "invalid_field",
+                    "'params' must be a JSON object",
+                )
+                return
+            # ASSUMPTION: The base class tracks request_id in _active_requests
+            # around the generate() call. Insertion happens before generate()
+            # is called; removal is in a finally block to guarantee cleanup.
             self._active_requests.add(request_id)
             try:
                 await self.generate(request_id, prompt, params)
@@ -596,6 +624,7 @@ class LoomAdapterBase(abc.ABC):
                 )
             finally:
                 self._active_requests.discard(request_id)
+                self.cancelled_requests.discard(request_id)
 
         elif msg_type == "health":
             try:

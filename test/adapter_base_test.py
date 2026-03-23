@@ -358,5 +358,121 @@ class TestLoadFailure(unittest.TestCase):
             raise
 
 
+class TestCancelDuringGenerate(unittest.TestCase):
+    """Cancel semantics during generation.
+
+    NOTE: The P0 command loop is sequential -- cancel commands are queued
+    while generate() is running and processed after it completes. True
+    concurrent cancel-during-generate requires the command loop to dispatch
+    generate as a background task (P1 scope). These tests verify the cancel
+    protocol works correctly within P0's sequential model.
+    """
+
+    def test_cancel_does_not_break_generation(self):
+        """Sending cancel during generate does not crash; generation completes."""
+        proc = _start_adapter('--token-delay', '0.05')
+        try:
+            _read_json_line(proc, timeout=5)  # heartbeat
+            _read_json_line(proc, timeout=5)  # ready
+
+            _send(proc, {"type": "generate", "id": "cancel-test",
+                         "prompt": "Hello", "params": {}})
+            # Send cancel while generate is running (will be queued)
+            _send(proc, {"type": "cancel", "id": "cancel-test"})
+
+            # Collect all messages until done
+            messages = []
+            for _ in range(10):
+                msg = _read_json_line(proc, timeout=5)
+                messages.append(msg)
+                if msg.get("type") == "done":
+                    break
+
+            done = messages[-1]
+            self.assertEqual(done["type"], "done")
+            self.assertEqual(done["id"], "cancel-test")
+            # P0: generation completes fully since cancel is queued
+            self.assertGreater(done["tokens_generated"], 0)
+
+            # Adapter should still be responsive after cancel
+            _send(proc, {"type": "health"})
+            health = _read_json_line(proc, timeout=5)
+            self.assertEqual(health["type"], "health")
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            proc.wait(timeout=3)
+
+
+class TestGenerateException(unittest.TestCase):
+    """Generate failure sends error response and adapter continues."""
+
+    def test_generate_failure_sends_error_and_continues(self):
+        """--fail-on-generate causes error response; adapter stays alive for next command."""
+        proc = _start_adapter('--fail-on-generate')
+        try:
+            _read_json_line(proc, timeout=5)  # heartbeat
+            _read_json_line(proc, timeout=5)  # ready
+
+            _send(proc, {"type": "generate", "id": "fail-test",
+                         "prompt": "Hello", "params": {}})
+            resp = _read_json_line(proc, timeout=5)
+            self.assertEqual(resp["type"], "error")
+            self.assertEqual(resp["id"], "fail-test")
+            self.assertEqual(resp["code"], "internal_error")
+            self.assertIn("RuntimeError", resp["message"])
+
+            # Adapter should still be alive and responsive
+            _send(proc, {"type": "health"})
+            health = _read_json_line(proc, timeout=5)
+            self.assertEqual(health["type"], "health")
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            proc.wait(timeout=3)
+
+
+class TestNonDictJson(unittest.TestCase):
+    """Non-dict JSON input (arrays, strings) produces error response."""
+
+    def setUp(self):
+        self.proc = _start_adapter()
+        _read_json_line(self.proc, timeout=5)  # heartbeat
+        _read_json_line(self.proc, timeout=5)  # ready
+
+    def tearDown(self):
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
+        self.proc.wait(timeout=3)
+
+    def test_json_array_produces_error(self):
+        self.proc.stdin.write(b'[1, 2, 3]\n')
+        self.proc.stdin.flush()
+        resp = _read_json_line(self.proc, timeout=5)
+        self.assertEqual(resp["type"], "error")
+        self.assertEqual(resp["code"], "invalid_json")
+        self.assertIn("expected JSON object", resp["message"])
+
+    def test_json_string_produces_error(self):
+        self.proc.stdin.write(b'"hello"\n')
+        self.proc.stdin.flush()
+        resp = _read_json_line(self.proc, timeout=5)
+        self.assertEqual(resp["type"], "error")
+        self.assertEqual(resp["code"], "invalid_json")
+
+    def test_cancel_without_id_is_silent(self):
+        """Cancel with no id field produces no response (fire-and-forget)."""
+        _send(self.proc, {"type": "cancel"})
+        _send(self.proc, {"type": "health"})
+        resp = _read_json_line(self.proc, timeout=5)
+        self.assertEqual(resp["type"], "health")
+
+
 if __name__ == '__main__':
     unittest.main()

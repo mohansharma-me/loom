@@ -53,11 +53,8 @@ class MlxAdapter(LoomAdapterBase):
         self.model = None
         self.tokenizer = None
 
-        # ASSUMPTION: cancelled_requests is a plain set (not thread-safe)
-        # because it is accessed only from the asyncio event loop (single
-        # thread).  cancel_request() adds an ID here; generate() checks it
-        # between token yields.
-        self.cancelled_requests: set = set()
+        # ASSUMPTION: cancelled_requests is inherited from LoomAdapterBase
+        # and cleaned up centrally in _dispatch_command's finally block.
 
     # -------------------------------------------------------------------------
     # CLI args
@@ -167,69 +164,71 @@ class MlxAdapter(LoomAdapterBase):
         # args per the mlx-lm 0.20.x public API.
         gen = generate_step(input_ids, self.model)
 
+        # Unique sentinel for generator exhaustion -- avoids confusing
+        # a legitimate None yield with end-of-generation.
+        _EXHAUSTED = object()
+
         start = time.monotonic()
         tokens_sent = 0
 
-        for _ in range(max_tokens):
-            # Check cancellation before each token.
-            if request_id in self.cancelled_requests:
-                logger.info("request %s cancelled, stopping generation", request_id)
-                break
+        try:
+            for _ in range(max_tokens):
+                # Check cancellation before each token.
+                if request_id in self.cancelled_requests:
+                    logger.info("request %s cancelled, stopping generation",
+                                request_id)
+                    break
 
-            # Advance the generator by one step in a thread executor so we
-            # don't block the event loop during the Metal forward pass.
-            # ASSUMPTION: StopIteration from the generator is caught here and
-            # treated as end-of-generation (generator exhausted early).
-            try:
-                result = await loop.run_in_executor(None, next, gen, None)
-            except StopIteration:
-                break
+                # Advance the generator by one step in a thread executor so we
+                # don't block the event loop during the Metal forward pass.
+                # next(gen, _EXHAUSTED) returns _EXHAUSTED when generator is done
+                # (never raises StopIteration).
+                result = await loop.run_in_executor(
+                    None, next, gen, _EXHAUSTED
+                )
 
-            if result is None:
-                # Generator exhausted (next() returned sentinel).
-                break
+                if result is _EXHAUSTED:
+                    break
 
-            token_tensor, _logprobs = result
+                token_tensor, _logprobs = result
 
-            # ASSUMPTION: .item() converts the mlx scalar tensor to a Python int.
-            # We store it in a local variable to avoid calling .item() twice.
-            token_int = token_tensor.item()
+                # ASSUMPTION: .item() converts the mlx scalar tensor to a Python int.
+                token_int = token_tensor.item()
 
-            # Check for EOS token.
-            # ASSUMPTION: tokenizer.eos_token_id may be None for models that do
-            # not define an EOS token; we only break on it when it is set.
-            if (
-                self.tokenizer.eos_token_id is not None
-                and token_int == self.tokenizer.eos_token_id
-            ):
-                break
+                # Check for EOS token.
+                # ASSUMPTION: tokenizer.eos_token_id may be None for models that
+                # do not define an EOS token; we only break when it is set.
+                if (
+                    self.tokenizer.eos_token_id is not None
+                    and token_int == self.tokenizer.eos_token_id
+                ):
+                    break
 
-            # Decode single token to text.
-            # ASSUMPTION: tokenizer.decode([token_int]) produces the text fragment
-            # for one token.  skip_special_tokens=True avoids emitting BOS/EOS
-            # markers as text in the output stream.
-            token_text = self.tokenizer.decode(
-                [token_int], skip_special_tokens=True
-            )
+                # Decode single token to text.
+                # ASSUMPTION: tokenizer.decode([token_int]) produces the text
+                # fragment for one token. skip_special_tokens=True avoids
+                # emitting BOS/EOS markers in the output stream.
+                token_text = self.tokenizer.decode(
+                    [token_int], skip_special_tokens=True
+                )
 
-            tokens_sent += 1
-            self.send_token(
+                tokens_sent += 1
+                self.send_token(
+                    request_id=request_id,
+                    token_id=tokens_sent,
+                    text=token_text,
+                )
+
+                # Yield control to the event loop so health/cancel/other
+                # commands can be serviced between tokens.
+                await asyncio.sleep(0)
+        finally:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            self.send_done(
                 request_id=request_id,
-                token_id=tokens_sent,  # 1-based sequence counter
-                text=token_text,
-                finished=False,
+                tokens_generated=tokens_sent,
+                time_ms=elapsed_ms,
             )
-
-            # Yield control to the event loop so health/cancel/other commands
-            # can be serviced between tokens.
-            await asyncio.sleep(0)
-
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        self.send_done(
-            request_id=request_id,
-            tokens_generated=tokens_sent,
-            time_ms=elapsed_ms,
-        )
 
     async def get_health(self) -> dict:
         """Return health metrics using psutil for unified memory on Apple Silicon.
@@ -245,17 +244,26 @@ class MlxAdapter(LoomAdapterBase):
         # ASSUMPTION: psutil.virtual_memory() reports unified system RAM on
         # Apple Silicon, which is the correct proxy for model memory since
         # MLX allocates from unified memory.
-        import psutil  # noqa: PLC0415
-        vm = psutil.virtual_memory()
-        return {
-            "status": "ok",
-            # ASSUMPTION: gpu_util is always 0.0 because Apple Silicon has no
-            # public Metal API for GPU utilisation percentage.  This is a known
-            # limitation of the MLX adapter -- not a Loom bug.
-            "gpu_util": 0.0,
-            "mem_used_gb": vm.used / (1024 ** 3),
-            "mem_total_gb": vm.total / (1024 ** 3),
-        }
+        try:
+            import psutil  # noqa: PLC0415
+            vm = psutil.virtual_memory()
+            return {
+                "status": "ok",
+                # ASSUMPTION: gpu_util is always 0.0 because Apple Silicon has no
+                # public Metal API for GPU utilisation percentage.  This is a known
+                # limitation of the MLX adapter -- not a Loom bug.
+                "gpu_util": 0.0,
+                "mem_used_gb": vm.used / (1024 ** 3),
+                "mem_total_gb": vm.total / (1024 ** 3),
+            }
+        except Exception as exc:
+            logger.warning("psutil health query failed: %s", exc)
+            return {
+                "status": "degraded",
+                "gpu_util": 0.0,
+                "mem_used_gb": 0.0,
+                "mem_total_gb": 0.0,
+            }
 
     async def get_memory(self) -> dict:
         """Return memory stats using psutil for unified memory on Apple Silicon.
@@ -267,13 +275,21 @@ class MlxAdapter(LoomAdapterBase):
         # Apple Silicon.  available is the OS-reported immediately usable RAM
         # (includes reclaimable cache), which is the right value for "how much
         # memory can we use for another model?".
-        import psutil  # noqa: PLC0415
-        vm = psutil.virtual_memory()
-        return {
-            "total_gb": vm.total / (1024 ** 3),
-            "used_gb": vm.used / (1024 ** 3),
-            "available_gb": vm.available / (1024 ** 3),
-        }
+        try:
+            import psutil  # noqa: PLC0415
+            vm = psutil.virtual_memory()
+            return {
+                "total_gb": vm.total / (1024 ** 3),
+                "used_gb": vm.used / (1024 ** 3),
+                "available_gb": vm.available / (1024 ** 3),
+            }
+        except Exception as exc:
+            logger.warning("psutil memory query failed: %s", exc)
+            return {
+                "total_gb": 0.0,
+                "used_gb": 0.0,
+                "available_gb": 0.0,
+            }
 
     async def cancel_request(self, request_id: str) -> None:
         """Record request_id in cancelled_requests (fire-and-forget).
