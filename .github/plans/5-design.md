@@ -238,10 +238,37 @@ Changes to `priv/scripts/mock_adapter.py`:
 
 ## Configuration
 
-All defaults are configurable via JSON config, overridable per model:
+All defaults are configurable via JSON config (`config/loom.json`), overridable per engine. Below is the complete config shape showing multi-model setup with per-engine port overrides:
 
 ```json
 {
+  "engines": [
+    {
+      "name": "qwen2.5-1.5b",
+      "backend": "vllm",
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "gpu_ids": [0],
+      "tp_size": 1
+    },
+    {
+      "name": "llama-70b",
+      "backend": "vllm",
+      "model": "meta-llama/Llama-3-70B-Instruct",
+      "gpu_ids": [1, 2, 3, 4],
+      "tp_size": 4,
+      "port": {
+        "heartbeat_timeout_ms": 30000,
+        "shutdown_timeout_ms": 20000
+      }
+    },
+    {
+      "name": "tinyllama-mlx",
+      "backend": "mlx",
+      "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+      "gpu_ids": [],
+      "tp_size": 1
+    }
+  ],
   "port": {
     "defaults": {
       "max_line_length": 1048576,
@@ -250,18 +277,17 @@ All defaults are configurable via JSON config, overridable per model:
       "shutdown_timeout_ms": 10000,
       "post_close_timeout_ms": 5000,
       "heartbeat_interval_ms": 5000
-    },
-    "overrides": {
-      "llama-70b": {
-        "heartbeat_timeout_ms": 30000,
-        "shutdown_timeout_ms": 20000
-      }
     }
+  },
+  "server": {
+    "port": 8080
   }
 }
 ```
 
-`loom_port` does not read config directly — it receives a merged `Opts` map at `start_link`. The coordinator (or whoever starts it) merges defaults + per-model overrides. `heartbeat_interval_ms` is enforced adapter-side, documented here for adapter authors.
+**Merge precedence:** per-engine `"port"` overrides > top-level `"port.defaults"` > hardcoded defaults in `loom_port`.
+
+`loom_port` does not read config directly — it receives a merged `Opts` map at `start_link`. The coordinator (or whoever starts it) merges defaults + per-engine overrides from config and passes the final map. `heartbeat_interval_ms` is enforced adapter-side, documented here for adapter authors.
 
 ---
 

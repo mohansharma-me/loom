@@ -50,7 +50,7 @@ Loom communicates with inference engines over a stdio protocol — it does not i
 - **TensorRT-LLM** — Linux with NVIDIA GPUs. See [TensorRT-LLM docs](https://nvidia.github.io/TensorRT-LLM/).
 - **MLX** — macOS on Apple Silicon. See [MLX docs](https://ml-explore.github.io/mlx/).
 
-For this guide we'll use vLLM. If you're on a Mac with Apple Silicon, substitute `backend: mlx` in the configuration below.
+For this guide we'll use vLLM. If you're on a Mac with Apple Silicon, substitute `"backend": "mlx"` in the configuration below.
 
 ### 1. Download & Extract Loom
 
@@ -62,18 +62,23 @@ cd loom
 
 ### 2. Configure an Engine
 
-Edit `config/loom.yml` to point Loom at a model. This example uses [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct), a small open-source model that runs on a single GPU:
+Edit `config/loom.json` to point Loom at a model. This example uses [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct), a small open-source model that runs on a single GPU:
 
-```yaml
-engines:
-  - name: qwen2.5-1.5b
-    backend: vllm
-    model: Qwen/Qwen2.5-1.5B-Instruct
-    gpu_ids: [0]
-    tp_size: 1
-
-server:
-  port: 8080
+```json
+{
+  "engines": [
+    {
+      "name": "qwen2.5-1.5b",
+      "backend": "vllm",
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "gpu_ids": [0],
+      "tp_size": 1
+    }
+  ],
+  "server": {
+    "port": 8080
+  }
+}
 ```
 
 Until Loom integrates with HuggingFace directly, you'll need to download the model yourself:
@@ -132,19 +137,25 @@ Recovery is automatic. The supervisor detects the crash in milliseconds via Port
 
 Loom's real power is orchestrating multiple models. Add a second engine to serve a different model on a separate GPU:
 
-```yaml
-engines:
-  - name: qwen2.5-1.5b
-    backend: vllm
-    model: Qwen/Qwen2.5-1.5B-Instruct
-    gpu_ids: [0]
-    tp_size: 1
-
-  - name: tinyllama-1.1b
-    backend: vllm
-    model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
-    gpu_ids: [1]
-    tp_size: 1
+```json
+{
+  "engines": [
+    {
+      "name": "qwen2.5-1.5b",
+      "backend": "vllm",
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "gpu_ids": [0],
+      "tp_size": 1
+    },
+    {
+      "name": "tinyllama-1.1b",
+      "backend": "vllm",
+      "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+      "gpu_ids": [1],
+      "tp_size": 1
+    }
+  ]
+}
 ```
 
 Now requests specify which model to use via the `"model"` field. The router directs each request to the correct engine. If one engine crashes, the other keeps serving. Each engine is an independent subtree in the OTP supervision hierarchy — isolated failure, isolated recovery.
