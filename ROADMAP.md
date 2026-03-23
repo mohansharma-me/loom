@@ -63,8 +63,9 @@ Standards and practices that apply across all phases.
 ### Flow Control
 - [ ] Bounded request queues per engine + global backpressure — [#23](https://github.com/mohansharma-me/loom/issues/23) `P1-07`
 
-### TensorRT Backend
+### Additional Backends
 - [ ] `loom_adapter_trt.py` for TensorRT-LLM — [#24](https://github.com/mohansharma-me/loom/issues/24) `P1-08`
+- [ ] `loom_adapter_mlx.py` for MLX (Apple Silicon) — [#63](https://github.com/mohansharma-me/loom/issues/63) `P1-12`
 
 ### Observability & API
 - [ ] `loom_metrics` with telemetry events and Prometheus endpoint — [#25](https://github.com/mohansharma-me/loom/issues/25) `P1-09`
@@ -116,7 +117,7 @@ Standards and practices that apply across all phases.
 
 > Open-source release, documentation, community building.
 
-- [ ] Production Docker images (BEAM + Python adapters + GPU drivers) — [#44](https://github.com/mohansharma-me/loom/issues/44) `P5-01`
+- [ ] Production Docker images (BEAM + Python adapters + GPU drivers) and native macOS/Apple Silicon packaging — [#44](https://github.com/mohansharma-me/loom/issues/44) `P5-01`
 - [ ] Helm chart for Kubernetes deployment with GPU scheduling — [#45](https://github.com/mohansharma-me/loom/issues/45) `P5-02`
 - [ ] Integrations: LiteLLM, LangChain, LlamaIndex — [#46](https://github.com/mohansharma-me/loom/issues/46) `P5-03`
 - [ ] Prometheus alerting rules and Grafana dashboards — [#47](https://github.com/mohansharma-me/loom/issues/47) `P5-04`
@@ -130,12 +131,12 @@ Standards and practices that apply across all phases.
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 3 | 0 | 0 | 3 |
 | Phase 0 | 15 | 4 | 0 | 11 |
-| Phase 1 | 11 | 0 | 0 | 11 |
+| Phase 1 | 12 | 0 | 0 | 12 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **50** | **4** | **0** | **46** |
+| **Total** | **51** | **4** | **0** | **47** |
 
 ## What's Next
 

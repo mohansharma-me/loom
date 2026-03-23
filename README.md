@@ -48,8 +48,9 @@ Loom communicates with inference engines over a stdio protocol — it does not i
 
 - **vLLM** — Linux with NVIDIA CUDA, AMD ROCm, or CPU-only mode. See [vLLM installation](https://docs.vllm.ai/en/latest/getting_started/installation/index.html).
 - **TensorRT-LLM** — Linux with NVIDIA GPUs. See [TensorRT-LLM docs](https://nvidia.github.io/TensorRT-LLM/).
+- **MLX** — macOS on Apple Silicon. See [MLX docs](https://ml-explore.github.io/mlx/).
 
-For this guide we'll use vLLM.
+For this guide we'll use vLLM. If you're on a Mac with Apple Silicon, substitute `backend: mlx` in the configuration below.
 
 ### 1. Download & Extract Loom
 
