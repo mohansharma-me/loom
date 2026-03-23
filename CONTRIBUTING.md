@@ -2,6 +2,56 @@
 
 Thank you for your interest in contributing! This project welcomes contributions from the community.
 
+## Development Setup
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
+
+### Quick Start
+
+```bash
+git clone https://github.com/mohansharma-me/loom.git
+cd loom
+docker compose build
+docker compose up
+```
+
+The `dev` service builds an immutable OTP release image. Code changes require a rebuild:
+
+```bash
+docker compose build && docker compose up
+```
+
+### Running Tests
+
+Erlang tests:
+
+```bash
+docker compose run --rm test rebar3 eunit
+```
+
+Mock adapter tests (Python):
+
+```bash
+docker compose run --rm test python3 -m unittest test.mock_adapter_test -v
+```
+
+### Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SERVER_PORT` | `8080` | Docker port mapping (future HTTP API) |
+| `LOOM_NODE_NAME` | `loom@127.0.0.1` | BEAM node name |
+| `LOOM_COOKIE` | `loom_dev_cookie` | Erlang distribution cookie |
+| `LOOM_LOG_DIR` | `log` | SASL log directory (local `rebar3 shell` only; Docker logs to stdout) |
+
+Override via environment or a `.env` file:
+
+```bash
+SERVER_PORT=9090 docker compose up
+```
+
 ## How to Contribute
 
 ### 1. Fork & Clone
