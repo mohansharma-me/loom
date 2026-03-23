@@ -38,7 +38,7 @@ docker-compose.yml
 Multi-stage Alpine build:
 
 - **Builder stage (`builder`):** `erlang:27-alpine`. Downloads and installs rebar3 (not included in base image). Installs `python3`. Copies project source (filtered by `.dockerignore`). Runs `rebar3 as prod release`. Retains full toolchain — the `test` service targets this stage.
-- **Runtime stage:** `alpine:3.21`. Installs `python3` (for mock adapter). Copies only the built release from builder (`_build/prod/rel/loom/`). No rebar3, no compiler, no build tools.
+- **Runtime stage:** `alpine:3.22`. Installs `python3` (for mock adapter). Copies only the built release from builder (`_build/prod/rel/loom/`). No rebar3, no compiler, no build tools.
 - **CMD:** `bin/loom foreground`
 
 ### 2. `docker-compose.yml`

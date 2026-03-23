@@ -4,8 +4,11 @@ FROM erlang:27-alpine AS builder
 RUN apk add --no-cache python3 git
 
 # Install rebar3
-RUN wget https://s3.amazonaws.com/rebar3/rebar3 -O /usr/local/bin/rebar3 \
-    && chmod +x /usr/local/bin/rebar3
+# ASSUMPTION: rebar3 version should match CI (env.REBAR3_VERSION in ci.yml is 3.24)
+RUN wget https://github.com/erlang/rebar3/releases/download/3.24.0/rebar3 \
+        -O /usr/local/bin/rebar3 \
+    && chmod +x /usr/local/bin/rebar3 \
+    && rebar3 --version
 
 WORKDIR /app
 
@@ -32,6 +35,8 @@ COPY --from=builder /app/_build/prod/rel/loom ./
 
 ENV SERVER_PORT=8080
 ENV LOOM_NODE_NAME=loom@127.0.0.1
+# WARNING: Dev-only default. Never use this cookie value in production.
+# The Erlang distribution cookie grants full cluster access.
 ENV LOOM_COOKIE=loom_dev_cookie
 
 EXPOSE 8080
