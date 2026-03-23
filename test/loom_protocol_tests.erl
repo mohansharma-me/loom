@@ -217,3 +217,67 @@ decode_done_missing_field_test() ->
         {error, {missing_field, <<"time_ms">>, <<"done">>}},
         loom_protocol:decode(Json)
     ).
+
+%% --- Decode error tests ---
+
+-spec decode_error_with_id_test() -> any().
+decode_error_with_id_test() ->
+    Json = loom_json:encode(#{
+        type => <<"error">>, id => <<"r1">>,
+        code => <<"engine_crashed">>, message => <<"vLLM died">>
+    }),
+    ?assertEqual(
+        {ok, {error, <<"r1">>, <<"engine_crashed">>, <<"vLLM died">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_error_no_id_test() -> any().
+decode_error_no_id_test() ->
+    Json = loom_json:encode(#{
+        type => <<"error">>,
+        code => <<"parse_error">>, message => <<"bad input">>
+    }),
+    ?assertEqual(
+        {ok, {error, undefined, <<"parse_error">>, <<"bad input">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_error_null_id_test() -> any().
+decode_error_null_id_test() ->
+    %% JSON null maps to Erlang null atom via loom_json
+    Json = <<"{\"type\":\"error\",\"id\":null,\"code\":\"x\",\"message\":\"y\"}">>,
+    ?assertEqual(
+        {ok, {error, undefined, <<"x">>, <<"y">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_error_missing_code_test() -> any().
+decode_error_missing_code_test() ->
+    Json = loom_json:encode(#{
+        type => <<"error">>, message => <<"oops">>
+    }),
+    ?assertEqual(
+        {error, {missing_field, <<"code">>, <<"error">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_error_missing_message_test() -> any().
+decode_error_missing_message_test() ->
+    Json = loom_json:encode(#{
+        type => <<"error">>, code => <<"x">>
+    }),
+    ?assertEqual(
+        {error, {missing_field, <<"message">>, <<"error">>}},
+        loom_protocol:decode(Json)
+    ).
+
+-spec decode_error_invalid_id_type_test() -> any().
+decode_error_invalid_id_type_test() ->
+    Json = loom_json:encode(#{
+        type => <<"error">>, id => 42,
+        code => <<"x">>, message => <<"y">>
+    }),
+    ?assertMatch(
+        {error, {invalid_field, <<"id">>, binary, _}},
+        loom_protocol:decode(Json)
+    ).

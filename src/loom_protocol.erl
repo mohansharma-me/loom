@@ -161,9 +161,28 @@ decode_done(Map) ->
         {ok, {done, Id, TokensGenerated, TimeMs}}
     end).
 
-%% Stubs for remaining per-type decoders (implemented in subsequent tasks)
 -spec decode_error_msg(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
-decode_error_msg(_) -> erlang:error(not_implemented).
+decode_error_msg(Map) ->
+    %% ASSUMPTION: OTP 27 json:decode/1 maps JSON null to the atom 'null'.
+    %% id is optional: absent key → undefined, null value → undefined,
+    %% binary value → keep as-is, anything else → validation error.
+    Id = case maps:get(<<"id">>, Map, undefined) of
+        null      -> undefined;
+        undefined -> undefined;
+        V when is_binary(V) -> V;
+        Other -> Other  %% non-binary, non-null: will trigger invalid_field below
+    end,
+    case {Id, require(<<"code">>, <<"error">>, Map), require(<<"message">>, <<"error">>, Map)} of
+        {_, {error, _} = Err, _} -> Err;
+        {_, _, {error, _} = Err} -> Err;
+        {Id2, {ok, Code}, {ok, Msg}} ->
+            case {is_binary(Id2) orelse Id2 =:= undefined, is_binary(Code), is_binary(Msg)} of
+                {true,  true,  true}  -> {ok, {error, Id2, Code, Msg}};
+                {false, _,     _}     -> {error, {invalid_field, <<"id">>,      binary, Id2}};
+                {_,     false, _}     -> {error, {invalid_field, <<"code">>,    binary, Code}};
+                {_,     _,     false} -> {error, {invalid_field, <<"message">>, binary, Msg}}
+            end
+    end.
 -spec decode_health(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
 decode_health(_) -> erlang:error(not_implemented).
 -spec decode_memory(map()) -> {ok, inbound_msg()} | {error, decode_error()}.
