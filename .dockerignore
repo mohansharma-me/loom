@@ -1,0 +1,11 @@
+_build/
+.git/
+log/
+*.plt
+erl_crash.dump
+rebar3.crashdump
+.rebar3/
+.vscode/
+.claude/
+Dockerfile.dev
+docker-compose.yml
