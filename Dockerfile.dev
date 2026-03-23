@@ -1,0 +1,39 @@
+# Stage 1: Builder — full toolchain for compiling and testing
+FROM erlang:27-alpine AS builder
+
+RUN apk add --no-cache python3 git
+
+# Install rebar3
+RUN wget https://s3.amazonaws.com/rebar3/rebar3 -O /usr/local/bin/rebar3 \
+    && chmod +x /usr/local/bin/rebar3
+
+WORKDIR /app
+
+# Copy project source
+COPY . .
+
+# Fetch deps and build prod release
+RUN rebar3 as prod release
+
+# Stage 2: Runtime — minimal image with just the release + Python
+# ASSUMPTION: Runtime Alpine version must match the erlang:27-alpine base (currently 3.22)
+# so that OpenSSL shared libraries are ABI-compatible with the bundled ERTS crypto NIF.
+FROM alpine:3.22
+
+RUN apk add --no-cache libstdc++ ncurses-libs openssl python3
+
+WORKDIR /app
+
+# Copy the built release from the builder stage
+COPY --from=builder /app/_build/prod/rel/loom ./
+
+# ASSUMPTION: rebar3 packages priv/ into the release automatically,
+# so mock_adapter.py is available at lib/loom-0.1.0/priv/scripts/
+
+ENV SERVER_PORT=8080
+ENV LOOM_NODE_NAME=loom@127.0.0.1
+ENV LOOM_COOKIE=loom_dev_cookie
+
+EXPOSE 8080
+
+CMD ["bin/loom", "foreground"]

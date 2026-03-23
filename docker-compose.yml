@@ -1,0 +1,19 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      - SERVER_PORT=${SERVER_PORT:-8080}
+      - LOOM_NODE_NAME=${LOOM_NODE_NAME:-loom@127.0.0.1}
+      - LOOM_COOKIE=${LOOM_COOKIE:-loom_dev_cookie}
+    ports:
+      # Reserved for future Cowboy HTTP listener (P0-10)
+      - "${SERVER_PORT:-8080}:${SERVER_PORT:-8080}"
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      target: builder
+    working_dir: /app
