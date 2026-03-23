@@ -67,6 +67,7 @@ class MockAdapterTest(unittest.TestCase):
         self.assertEqual(resp["status"], "ok")
         self.assertEqual(resp["gpu_util"], 0.0)
         self.assertEqual(resp["mem_used_gb"], 0.0)
+        self.assertEqual(resp["mem_total_gb"], 80.0)
 
     def test_memory(self):
         responses = self._send_receive({"type": "memory"})
@@ -105,6 +106,7 @@ class MockAdapterTest(unittest.TestCase):
         self.assertEqual(len(responses), 1)
         resp = responses[0]
         self.assertEqual(resp["type"], "error")
+        self.assertEqual(resp["code"], "unknown_type")
         self.assertIn("bogus", resp["message"])
 
     def test_missing_type(self):
@@ -112,6 +114,7 @@ class MockAdapterTest(unittest.TestCase):
         self.assertEqual(len(responses), 1)
         resp = responses[0]
         self.assertEqual(resp["type"], "error")
+        self.assertEqual(resp["code"], "missing_type")
         self.assertIn("missing 'type' field", resp["message"])
 
     def test_generate_missing_id(self):
@@ -119,6 +122,7 @@ class MockAdapterTest(unittest.TestCase):
         self.assertEqual(len(responses), 1)
         resp = responses[0]
         self.assertEqual(resp["type"], "error")
+        self.assertEqual(resp["code"], "missing_field")
         self.assertIn("missing 'id' field", resp["message"])
 
     def test_multiple_messages_in_session(self):
@@ -139,7 +143,28 @@ class MockAdapterTest(unittest.TestCase):
         responses = self._send_receive_raw("{this is not valid json\n")
         self.assertEqual(len(responses), 1)
         self.assertEqual(responses[0]["type"], "error")
+        self.assertEqual(responses[0]["code"], "invalid_json")
         self.assertIn("invalid JSON", responses[0]["message"])
+
+    def test_cancel_returns_no_response(self):
+        """Cancel is fire-and-forget, no response expected."""
+        responses = self._send_receive({"type": "cancel", "id": "req-1"})
+        self.assertEqual(responses, [])
+
+    def test_health_includes_mem_total(self):
+        """Health response includes mem_total_gb field."""
+        responses = self._send_receive({"type": "health"})
+        self.assertEqual(len(responses), 1)
+        self.assertIn("mem_total_gb", responses[0])
+        self.assertEqual(responses[0]["mem_total_gb"], 80.0)
+
+    def test_error_includes_code_field(self):
+        """All error responses include a code field."""
+        responses = self._send_receive_raw("not json\n")
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0]["type"], "error")
+        self.assertIn("code", responses[0])
+        self.assertEqual(responses[0]["code"], "invalid_json")
 
     def test_blank_lines_ignored(self):
         """Verify blank lines between messages produce no output."""

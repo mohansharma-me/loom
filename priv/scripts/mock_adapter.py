@@ -16,8 +16,10 @@ MOCK_TOKENS = ["Hello", "from", "Loom", "mock", "adapter"]
 
 
 # ASSUMPTION: Returns zeroed GPU metrics since no real GPU is present.
+# ASSUMPTION: mem_total_gb fixed at 80.0 to approximate H100 GPU specs (see KNOWLEDGE.md).
 def handle_health(_msg):
-    return [{"type": "health", "status": "ok", "gpu_util": 0.0, "mem_used_gb": 0.0}]
+    return [{"type": "health", "status": "ok", "gpu_util": 0.0,
+             "mem_used_gb": 0.0, "mem_total_gb": 80.0}]
 
 
 # ASSUMPTION: Returns 80GB total to approximate H100 GPU specs (see KNOWLEDGE.md).
@@ -35,7 +37,8 @@ def handle_memory(_msg):
 def handle_generate(msg):
     req_id = msg.get("id")
     if req_id is None:
-        return [{"type": "error", "message": "generate request missing 'id' field"}]
+        return [{"type": "error", "code": "missing_field",
+                 "message": "generate request missing 'id' field"}]
 
     responses = []
     for i, token_text in enumerate(MOCK_TOKENS):
@@ -59,11 +62,23 @@ def handle_generate(msg):
     return responses
 
 
+def handle_cancel(msg):
+    # Fire-and-forget: no response. In real adapter, would abort generation.
+    return []
+
+
+def handle_shutdown(_msg):
+    print("[mock_adapter] shutdown requested, exiting", file=sys.stderr)
+    sys.exit(0)
+
+
 # ASSUMPTION: Protocol matches KNOWLEDGE.md section 4.4 line-delimited JSON wire protocol.
 HANDLERS = {
     "health": handle_health,
     "memory": handle_memory,
     "generate": handle_generate,
+    "cancel": handle_cancel,
+    "shutdown": handle_shutdown,
 }
 
 
@@ -72,15 +87,18 @@ def process_line(line):
     try:
         msg = json.loads(line)
     except json.JSONDecodeError as e:
-        return [{"type": "error", "message": f"invalid JSON: {e}"}]
+        return [{"type": "error", "code": "invalid_json",
+                 "message": f"invalid JSON: {e}"}]
 
     msg_type = msg.get("type")
     if msg_type is None:
-        return [{"type": "error", "message": "message missing 'type' field"}]
+        return [{"type": "error", "code": "missing_type",
+                 "message": "message missing 'type' field"}]
 
     handler = HANDLERS.get(msg_type)
     if handler is None:
-        return [{"type": "error", "message": f"unknown message type: {msg_type}"}]
+        return [{"type": "error", "code": "unknown_type",
+                 "message": f"unknown message type: {msg_type}"}]
 
     return handler(msg)
 
@@ -97,7 +115,8 @@ def main():
                 sys.stdout.write(json.dumps(resp) + '\n')
             sys.stdout.flush()
         except Exception as e:
-            error_resp = {"type": "error", "message": f"internal adapter error: {e}"}
+            error_resp = {"type": "error", "code": "internal_error",
+                          "message": f"internal adapter error: {e}"}
             try:
                 sys.stdout.write(json.dumps(error_resp) + '\n')
                 sys.stdout.flush()
