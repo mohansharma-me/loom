@@ -384,8 +384,6 @@ merge_thresholds(loom_gpu_backend_nvidia, User) ->
 merge_thresholds(loom_gpu_backend_apple, User) ->
     maps:merge(#{mem_percent => 90.0}, User);
 merge_thresholds(loom_gpu_backend_mock, User) ->
-    User;
-merge_thresholds(_, User) ->
     User.
 
 %%====================================================================
@@ -400,5 +398,5 @@ schedule_poll(#data{poll_interval_ms = Interval} = Data) ->
 -spec cancel_timer(reference() | undefined) -> ok.
 cancel_timer(undefined) -> ok;
 cancel_timer(TRef) ->
-    erlang:cancel_timer(TRef),
+    _ = erlang:cancel_timer(TRef),
     ok.

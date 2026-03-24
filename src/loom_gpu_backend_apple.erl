@@ -166,9 +166,11 @@ collect_port_output(Port, Acc, Parent, Ref) ->
         {Port, {data, Data}} ->
             collect_port_output(Port, <<Acc/binary, Data/binary>>, Parent, Ref);
         {Port, {exit_status, 0}} ->
-            Parent ! {Ref, {ok, Acc}};
+            Parent ! {Ref, {ok, Acc}},
+            ok;
         {Port, {exit_status, Code}} ->
-            Parent ! {Ref, {error, {exit_code, Code}}}
+            Parent ! {Ref, {error, {exit_code, Code}}},
+            ok
     end.
 
 -spec parse_page_size([string()]) -> {ok, pos_integer()} | {error, term()}.
