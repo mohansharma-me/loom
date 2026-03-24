@@ -47,6 +47,31 @@ parse_empty_string_test() ->
 parse_garbage_test() ->
     ?assertMatch({error, {parse_error, _}}, loom_gpu_backend_nvidia:parse_nvidia_csv("not,csv,data,at,all,!")).
 
+%% --- edge case tests ---
+
+-spec parse_zero_values_test() -> any().
+parse_zero_values_test() ->
+    %% Cold-start GPU with zero memory used
+    Line = "0, 0, 81920, 30, 50, 0",
+    {ok, M} = loom_gpu_backend_nvidia:parse_nvidia_csv(Line),
+    ?assertEqual(0.0, maps:get(gpu_util, M)),
+    ?assertEqual(0.0, maps:get(mem_used_gb, M)),
+    ?assertEqual(30.0, maps:get(temperature_c, M)).
+
+-spec parse_all_not_supported_test() -> any().
+parse_all_not_supported_test() ->
+    %% Some older/embedded GPUs report all fields as unsupported
+    Line = "[Not Supported], [Not Supported], [Not Supported], [Not Supported], [Not Supported], [Not Supported]",
+    {ok, M} = loom_gpu_backend_nvidia:parse_nvidia_csv(Line),
+    ?assertEqual(-1.0, maps:get(gpu_util, M)),
+    ?assertEqual(-1.0, maps:get(mem_used_gb, M)),
+    ?assertEqual(-1.0, maps:get(mem_total_gb, M)),
+    ?assertEqual(-1.0, maps:get(temperature_c, M)),
+    ?assertEqual(-1.0, maps:get(power_w, M)),
+    ?assertEqual(-1, maps:get(ecc_errors, M)).
+
+%% --- detect/0 test ---
+
 -spec detect_returns_boolean_test() -> any().
 detect_returns_boolean_test() ->
     Result = loom_gpu_backend_nvidia:detect(),

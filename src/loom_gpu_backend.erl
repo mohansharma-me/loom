@@ -3,7 +3,8 @@
 %%% monitoring backends.
 %%%
 %%% Each backend implements detect/0 (platform check), init/1
-%%% (setup), poll/1 (collect metrics), and terminate/1 (cleanup).
+%%% (setup), poll/1 (collect metrics), terminate/1 (cleanup), and
+%%% default_thresholds/0 (backend-specific threshold defaults).
 %%% All backends return a normalized metrics() map with required
 %%% keys. Unavailable values use -1.0 / -1 sentinels.
 %%%
@@ -13,7 +14,12 @@
 %%%-------------------------------------------------------------------
 -module(loom_gpu_backend).
 
--export_type([metrics/0]).
+-export_type([metrics/0, gpu_id/0]).
+
+%% ASSUMPTION: gpu_id can be a non-negative integer (GPU index for
+%% NVIDIA) or an atom (named identifier). Using a type alias makes
+%% the intended usage clear across the codebase.
+-type gpu_id() :: atom() | non_neg_integer().
 
 -type metrics() :: #{
     gpu_util       := float(),
@@ -29,3 +35,4 @@
 -callback init(Opts :: map()) -> {ok, State :: term()} | {error, term()}.
 -callback poll(State :: term()) -> {ok, metrics(), NewState :: term()} | {error, term()}.
 -callback terminate(State :: term()) -> ok.
+-callback default_thresholds() -> #{atom() => number()}.

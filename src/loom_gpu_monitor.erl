@@ -24,9 +24,13 @@
 
 -include_lib("kernel/include/logger.hrl").
 
+%% Known threshold keys that check_thresholds/2 understands.
+-define(KNOWN_THRESHOLD_KEYS, [temperature_c, mem_percent]).
+
 -record(data, {
-    gpu_id             :: term(),
+    gpu_id             :: loom_gpu_backend:gpu_id(),
     backend_mod        :: module(),
+    %% INVARIANT: backend_state was produced by backend_mod:init/1
     backend_state      :: term(),
     poll_interval_ms   :: pos_integer(),
     poll_timeout_ms    :: pos_integer(),
@@ -35,7 +39,8 @@
     thresholds         :: #{atom() => number()},
     breached           :: #{atom() => boolean()},
     consecutive_errors :: non_neg_integer(),
-    coordinator_pid    :: pid() | undefined
+    coordinator_pid    :: pid() | undefined,
+    coordinator_mon    :: reference() | undefined
 }).
 
 %%====================================================================
@@ -68,7 +73,7 @@ init(Opts) ->
     PollInterval = maps:get(poll_interval_ms, Opts, 5000),
     PollTimeout = maps:get(poll_timeout_ms, Opts, 3000),
     Coordinator = maps:get(coordinator, Opts, undefined),
-    AllowMock = maps:get(allow_mock_backend, Opts, true),
+    AllowMock = maps:get(allow_mock_backend, Opts, false),
     BackendAtom = maps:get(backend, Opts, auto),
     UserThresholds = maps:get(thresholds, Opts, #{}),
 
@@ -114,6 +119,14 @@ handle_info(poll, Data) ->
     {_Result, Data1} = do_poll(Data),
     Data2 = schedule_poll(Data1),
     {noreply, Data2};
+handle_info({'DOWN', MonRef, process, Pid, Reason},
+            #data{coordinator_mon = MonRef, coordinator_pid = Pid,
+                  gpu_id = GpuId} = Data) ->
+    ?LOG_WARNING("loom_gpu_monitor: gpu_id=~p coordinator ~p died "
+                 "(reason=~p), clearing coordinator reference",
+                 [GpuId, Pid, Reason]),
+    {noreply, Data#data{coordinator_pid = undefined,
+                        coordinator_mon = undefined}};
 handle_info(_Info, Data) ->
     {noreply, Data}.
 
@@ -123,7 +136,13 @@ terminate(Reason, #data{gpu_id = GpuId, backend_mod = Mod,
     ?LOG_INFO("loom_gpu_monitor: gpu_id=~p stopping, reason=~p",
               [GpuId, Reason]),
     cancel_timer(TRef),
-    Mod:terminate(BState),
+    try Mod:terminate(BState)
+    catch
+        Class:Error:Stacktrace ->
+            ?LOG_ERROR("loom_gpu_monitor: gpu_id=~p backend terminate crashed — "
+                       "class=~p error=~p stacktrace=~p",
+                       [GpuId, Class, Error, Stacktrace])
+    end,
     ok.
 
 %%====================================================================
@@ -145,11 +164,17 @@ init_with_backend(auto, AllowMock, Opts) ->
             {stop, Reason}
     end;
 init_with_backend(BackendAtom, _AllowMock, Opts) ->
-    Mod = backend_module(BackendAtom),
-    GpuId = maps:get(gpu_id, Opts),
-    ?LOG_INFO("loom_gpu_monitor: using explicitly configured backend=~p "
-              "for gpu_id=~p", [Mod, GpuId]),
-    init_backend(Mod, Opts).
+    case backend_module(BackendAtom) of
+        {ok, Mod} ->
+            GpuId = maps:get(gpu_id, Opts),
+            ?LOG_INFO("loom_gpu_monitor: using explicitly configured backend=~p "
+                      "for gpu_id=~p", [Mod, GpuId]),
+            init_backend(Mod, Opts);
+        {error, _} = Err ->
+            ?LOG_ERROR("loom_gpu_monitor: unknown backend ~p, "
+                       "valid backends: nvidia, apple, mock", [BackendAtom]),
+            {stop, Err}
+    end.
 
 -spec init_backend(module(), map()) -> {ok, #data{}} | {stop, term()}.
 init_backend(Mod, Opts) ->
@@ -159,14 +184,21 @@ init_backend(Mod, Opts) ->
     Coordinator = maps:get(coordinator, Opts),
     UserThresholds = maps:get(thresholds, Opts),
 
+    %% Warn about unrecognized threshold keys
+    warn_unknown_threshold_keys(GpuId, UserThresholds),
+
     case Mod:init(Opts) of
         {ok, BState} ->
             ?LOG_INFO("loom_gpu_monitor: backend init succeeded for gpu_id=~p, "
                       "scheduling first poll", [GpuId]),
-            Thresholds = merge_thresholds(Mod, UserThresholds),
+            Thresholds = maps:merge(Mod:default_thresholds(), UserThresholds),
             ?LOG_INFO("loom_gpu_monitor: starting gpu_id=~p backend=~p "
                       "poll_interval=~bms poll_timeout=~bms thresholds=~p",
                       [GpuId, Mod, PollInterval, PollTimeout, Thresholds]),
+            CoordMon = case Coordinator of
+                undefined -> undefined;
+                Pid -> erlang:monitor(process, Pid)
+            end,
             Data = #data{
                 gpu_id             = GpuId,
                 backend_mod        = Mod,
@@ -178,7 +210,8 @@ init_backend(Mod, Opts) ->
                 thresholds         = Thresholds,
                 breached           = #{},
                 consecutive_errors = 0,
-                coordinator_pid    = Coordinator
+                coordinator_pid    = Coordinator,
+                coordinator_mon    = CoordMon
             },
             {ok, schedule_poll(Data)};
         {error, Reason} ->
@@ -288,6 +321,18 @@ check_threshold(AlertType, Value, ThresholdKey,
 threshold_unit(temperature_c) -> "C";
 threshold_unit(mem_percent)   -> "%".
 
+-spec warn_unknown_threshold_keys(loom_gpu_backend:gpu_id(), map()) -> ok.
+warn_unknown_threshold_keys(GpuId, UserThresholds) ->
+    Unknown = maps:keys(UserThresholds) -- ?KNOWN_THRESHOLD_KEYS,
+    case Unknown of
+        [] -> ok;
+        Keys ->
+            ?LOG_WARNING("loom_gpu_monitor: gpu_id=~p unknown threshold keys ~p "
+                         "(known: ~p) — these will be ignored",
+                         [GpuId, Keys, ?KNOWN_THRESHOLD_KEYS]),
+            ok
+    end.
+
 %%====================================================================
 %% Internal — alerts and logging
 %%====================================================================
@@ -354,8 +399,10 @@ resolve_backend(AllowMock) ->
     case try_backends(Backends) of
         {ok, Mod} -> {ok, Mod};
         false when AllowMock ->
-            ?LOG_INFO("loom_gpu_monitor: no real backend detected, "
-                      "falling back to mock (allow_mock_backend=true)"),
+            ?LOG_WARNING("loom_gpu_monitor: no real GPU backend detected, "
+                         "falling back to MOCK backend. GPU metrics are "
+                         "SIMULATED. Set allow_mock_backend => false to "
+                         "fail instead."),
             {ok, loom_gpu_backend_mock};
         false ->
             {error, no_gpu_backend_detected}
@@ -373,18 +420,11 @@ try_backends([{Mod, Name} | Rest]) ->
             try_backends(Rest)
     end.
 
--spec backend_module(atom()) -> module().
-backend_module(nvidia) -> loom_gpu_backend_nvidia;
-backend_module(apple)  -> loom_gpu_backend_apple;
-backend_module(mock)   -> loom_gpu_backend_mock.
-
--spec merge_thresholds(module(), map()) -> #{atom() => number()}.
-merge_thresholds(loom_gpu_backend_nvidia, User) ->
-    maps:merge(#{temperature_c => 85.0, mem_percent => 95.0}, User);
-merge_thresholds(loom_gpu_backend_apple, User) ->
-    maps:merge(#{mem_percent => 90.0}, User);
-merge_thresholds(loom_gpu_backend_mock, User) ->
-    User.
+-spec backend_module(atom()) -> {ok, module()} | {error, term()}.
+backend_module(nvidia) -> {ok, loom_gpu_backend_nvidia};
+backend_module(apple)  -> {ok, loom_gpu_backend_apple};
+backend_module(mock)   -> {ok, loom_gpu_backend_mock};
+backend_module(Other)  -> {error, {unknown_backend, Other, [nvidia, apple, mock]}}.
 
 %%====================================================================
 %% Internal — timer

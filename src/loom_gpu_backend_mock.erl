@@ -12,7 +12,7 @@
 -module(loom_gpu_backend_mock).
 -behaviour(loom_gpu_backend).
 
--export([detect/0, init/1, poll/1, terminate/1]).
+-export([detect/0, init/1, poll/1, terminate/1, default_thresholds/0]).
 
 -spec detect() -> boolean().
 detect() ->
@@ -33,6 +33,10 @@ poll(#{metrics := Metrics} = State) ->
 -spec terminate(map()) -> ok.
 terminate(_State) ->
     ok.
+
+-spec default_thresholds() -> #{atom() => number()}.
+default_thresholds() ->
+    #{}.
 
 %%--------------------------------------------------------------------
 %% Internal

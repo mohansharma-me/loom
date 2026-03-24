@@ -20,10 +20,8 @@
 -module(loom_gpu_backend_apple).
 -behaviour(loom_gpu_backend).
 
--export([detect/0, init/1, poll/1, terminate/1]).
+-export([detect/0, init/1, poll/1, terminate/1, default_thresholds/0]).
 -export([parse_sysctl_memsize/1, parse_vm_stat/2, build_metrics/2]).
-
--include_lib("kernel/include/logger.hrl").
 
 -record(state, {
     poll_timeout :: pos_integer()
@@ -45,11 +43,11 @@ init(Opts) ->
 
 -spec poll(#state{}) -> {ok, loom_gpu_backend:metrics(), #state{}} | {error, term()}.
 poll(#state{poll_timeout = Timeout} = State) ->
-    case run_cmd_with_timeout("sysctl -n hw.memsize", Timeout) of
+    case loom_cmd:run_with_timeout("sysctl -n hw.memsize", Timeout) of
         {ok, SysctlOut} ->
             case parse_sysctl_memsize(SysctlOut) of
                 {ok, TotalBytes} ->
-                    case run_cmd_with_timeout("vm_stat", Timeout) of
+                    case loom_cmd:run_with_timeout("vm_stat", Timeout) of
                         {ok, VmStatOut} ->
                             case parse_vm_stat(VmStatOut, TotalBytes) of
                                 {ok, UsedGb, TotalGb} ->
@@ -67,6 +65,10 @@ poll(#state{poll_timeout = Timeout} = State) ->
 -spec terminate(#state{}) -> ok.
 terminate(_State) ->
     ok.
+
+-spec default_thresholds() -> #{atom() => number()}.
+default_thresholds() ->
+    #{mem_percent => 90.0}.
 
 %%--------------------------------------------------------------------
 %% Parsing (exported for testing)
@@ -96,6 +98,7 @@ parse_vm_stat(Output, TotalBytes) when TotalBytes > 0 ->
             Inactive = maps:get("Pages inactive", PageCounts, 0),
             Speculative = maps:get("Pages speculative", PageCounts, 0),
             %% ASSUMPTION: Available memory = (free + inactive + speculative) pages.
+            %% This matches macOS memory_pressure tool's definition of available memory.
             AvailableBytes = (Free + Inactive + Speculative) * PageSize,
             TotalGb = TotalBytes / (1024 * 1024 * 1024),
             UsedGb = (TotalBytes - AvailableBytes) / (1024 * 1024 * 1024),
@@ -132,46 +135,6 @@ is_arm64() ->
 has_required_commands() ->
     string:trim(os:cmd("which sysctl")) =/= "" andalso
     string:trim(os:cmd("which vm_stat")) =/= "".
-
--spec run_cmd_with_timeout(string(), pos_integer()) ->
-    {ok, string()} | {error, term()}.
-run_cmd_with_timeout(Cmd, Timeout) ->
-    Parent = self(),
-    Ref = make_ref(),
-    Pid = spawn(fun() ->
-        Port = open_port({spawn, Cmd}, [stream, exit_status, binary,
-                                         stderr_to_stdout]),
-        collect_port_output(Port, <<>>, Parent, Ref)
-    end),
-    MonRef = monitor(process, Pid),
-    receive
-        {Ref, {ok, Output}} ->
-            demonitor(MonRef, [flush]),
-            {ok, binary_to_list(Output)};
-        {Ref, {error, _} = Err} ->
-            demonitor(MonRef, [flush]),
-            Err;
-        {'DOWN', MonRef, process, Pid, Reason} ->
-            {error, {process_died, Reason}}
-    after Timeout ->
-        exit(Pid, kill),
-        demonitor(MonRef, [flush]),
-        receive {Ref, _} -> ok after 0 -> ok end,
-        {error, timeout}
-    end.
-
--spec collect_port_output(port(), binary(), pid(), reference()) -> ok.
-collect_port_output(Port, Acc, Parent, Ref) ->
-    receive
-        {Port, {data, Data}} ->
-            collect_port_output(Port, <<Acc/binary, Data/binary>>, Parent, Ref);
-        {Port, {exit_status, 0}} ->
-            Parent ! {Ref, {ok, Acc}},
-            ok;
-        {Port, {exit_status, Code}} ->
-            Parent ! {Ref, {error, {exit_code, Code}}},
-            ok
-    end.
 
 -spec parse_page_size([string()]) -> {ok, pos_integer()} | {error, term()}.
 parse_page_size([]) ->
