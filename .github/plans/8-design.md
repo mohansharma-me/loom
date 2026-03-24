@@ -30,7 +30,7 @@ Normalized metrics map returned by all backends:
     mem_total_gb   := float(),
     temperature_c  := float(),            %% or -1.0 if unavailable
     power_w        := float(),            %% or -1.0 if unavailable
-    ecc_errors     := non_neg_integer()   %% or -1 if unavailable
+    ecc_errors     := integer()            %% 0+ or -1 if unavailable
 }.
 ```
 
