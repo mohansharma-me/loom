@@ -9,14 +9,15 @@
 %%% nounits) is stable across driver versions. NVIDIA documents this
 %%% as a supported query interface.
 %%%
-%%% ASSUMPTION: nvidia-smi reports memory in MiB. We convert to GB
-%%% (divide by 1024) for the normalized metrics map.
+%%% ASSUMPTION: nvidia-smi reports memory in MiB. We convert to GiB
+%%% (divide by 1024) for the normalized metrics map. Field names use
+%%% "gb" for brevity but the unit is technically GiB.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(loom_gpu_backend_nvidia).
 -behaviour(loom_gpu_backend).
 
--export([detect/0, init/1, poll/1, terminate/1]).
+-export([detect/0, init/1, poll/1, terminate/1, default_thresholds/0]).
 -export([parse_nvidia_csv/1]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -44,23 +45,34 @@ init(Opts) ->
     NvidiaSmi = maps:get(nvidia_smi_path, Opts, "nvidia-smi"),
     PollTimeout = maps:get(poll_timeout_ms, Opts, 3000),
     %% ASSUMPTION: Validate GPU index exists by running a test query.
-    %% If nvidia-smi fails for this index, init returns an error.
+    %% Uses loom_cmd:run_with_timeout/2 to avoid hanging the supervisor
+    %% if nvidia-smi is stuck (e.g., during GPU driver reset).
     TestCmd = NvidiaSmi ++ " --query-gpu=name --id=" ++
               integer_to_list(GpuIndex) ++ " --format=csv,noheader",
-    case string:trim(os:cmd(TestCmd)) of
-        "" ->
-            {error, {gpu_index_not_found, GpuIndex}};
-        Result ->
-            case string:find(Result, "error") of
-                nomatch ->
-                    {ok, #state{
-                        gpu_index    = GpuIndex,
-                        nvidia_smi   = NvidiaSmi,
-                        poll_timeout = PollTimeout
-                    }};
+    case loom_cmd:run_with_timeout(TestCmd, PollTimeout) of
+        {ok, Result} ->
+            Trimmed = string:trim(Result),
+            case Trimmed of
+                "" ->
+                    {error, {gpu_index_not_found, GpuIndex}};
                 _ ->
-                    {error, {gpu_index_not_found, GpuIndex}}
-            end
+                    case string:find(Trimmed, "error") of
+                        nomatch ->
+                            {ok, #state{
+                                gpu_index    = GpuIndex,
+                                nvidia_smi   = NvidiaSmi,
+                                poll_timeout = PollTimeout
+                            }};
+                        _ ->
+                            {error, {gpu_index_not_found, GpuIndex}}
+                    end
+            end;
+        {error, timeout} ->
+            ?LOG_ERROR("loom_gpu_backend_nvidia: nvidia-smi timed out during "
+                       "init validation for GPU ~b", [GpuIndex]),
+            {error, {nvidia_smi_timeout, GpuIndex}};
+        {error, Reason} ->
+            {error, {nvidia_smi_failed, Reason}}
     end.
 
 -spec poll(#state{}) -> {ok, loom_gpu_backend:metrics(), #state{}} | {error, term()}.
@@ -69,7 +81,7 @@ poll(#state{gpu_index = Idx, nvidia_smi = Smi, poll_timeout = Timeout} = State) 
           "temperature.gpu,power.draw,ecc.errors.corrected.aggregate.total"
           " --id=" ++ integer_to_list(Idx) ++
           " --format=csv,noheader,nounits",
-    case run_cmd_with_timeout(Cmd, Timeout) of
+    case loom_cmd:run_with_timeout(Cmd, Timeout) of
         {ok, Output} ->
             case parse_nvidia_csv(string:trim(Output)) of
                 {ok, Metrics} ->
@@ -84,6 +96,10 @@ poll(#state{gpu_index = Idx, nvidia_smi = Smi, poll_timeout = Timeout} = State) 
 -spec terminate(#state{}) -> ok.
 terminate(_State) ->
     ok.
+
+-spec default_thresholds() -> #{atom() => number()}.
+default_thresholds() ->
+    #{temperature_c => 85.0, mem_percent => 95.0}.
 
 %%--------------------------------------------------------------------
 %% Parsing
@@ -107,7 +123,7 @@ parse_nvidia_csv(Line) ->
                 },
                 {ok, Metrics}
             catch
-                _:Reason ->
+                error:Reason:_Stacktrace ->
                     {error, {parse_error, Reason}}
             end;
         N ->
@@ -141,49 +157,3 @@ parse_int_field(S) ->
 -spec mib_to_gb(float()) -> float().
 mib_to_gb(-1.0) -> -1.0;
 mib_to_gb(Mib) -> Mib / 1024.0.
-
--spec run_cmd_with_timeout(string(), pos_integer()) ->
-    {ok, string()} | {error, term()}.
-run_cmd_with_timeout(Cmd, Timeout) ->
-    %% ASSUMPTION: Using open_port with spawn instead of os:cmd/1
-    %% so we can kill the OS process on timeout via port_close/1.
-    Parent = self(),
-    Ref = make_ref(),
-    Pid = spawn(fun() ->
-        Port = open_port({spawn, Cmd}, [stream, exit_status, binary,
-                                         stderr_to_stdout]),
-        collect_port_output(Port, <<>>, Parent, Ref)
-    end),
-    MonRef = monitor(process, Pid),
-    receive
-        {Ref, {ok, Output}} ->
-            demonitor(MonRef, [flush]),
-            {ok, binary_to_list(Output)};
-        {Ref, {error, _} = Err} ->
-            demonitor(MonRef, [flush]),
-            Err;
-        {'DOWN', MonRef, process, Pid, Reason} ->
-            {error, {process_died, Reason}}
-    after Timeout ->
-        exit(Pid, kill),
-        demonitor(MonRef, [flush]),
-        receive
-            {Ref, _} -> ok
-        after 0 -> ok
-        end,
-        ?LOG_WARNING("nvidia-smi command timed out after ~bms", [Timeout]),
-        {error, timeout}
-    end.
-
--spec collect_port_output(port(), binary(), pid(), reference()) -> ok.
-collect_port_output(Port, Acc, Parent, Ref) ->
-    receive
-        {Port, {data, Data}} ->
-            collect_port_output(Port, <<Acc/binary, Data/binary>>, Parent, Ref);
-        {Port, {exit_status, 0}} ->
-            Parent ! {Ref, {ok, Acc}},
-            ok;
-        {Port, {exit_status, Code}} ->
-            Parent ! {Ref, {error, {exit_code, Code}}},
-            ok
-    end.

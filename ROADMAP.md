@@ -153,4 +153,5 @@ Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 4. ~~**#4 — P0-04:** JSON wire protocol (defines the BEAM↔Python contract)~~ ✓
 5. ~~**#5 — P0-05:** Port GenServer (loom_port gen_statem)~~ ✓
 6. ~~**#6 — P0-06:** Python adapter wrapping vLLM AsyncLLMEngine~~ ✓
-7. **#8 — P0-07:** GPU health monitoring (loom_gpu_monitor)
+7. ~~**#8 — P0-07:** GPU health monitoring (loom_gpu_monitor)~~ ✓
+8. **#9 — P0-08:** Engine lifecycle management (loom_engine_coordinator)
