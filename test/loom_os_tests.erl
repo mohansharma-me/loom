@@ -7,8 +7,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% ASSUMPTION: Tests run on a Unix-like system (macOS or Linux) where
-%% sleep(1) and kill -9 are available. Windows CI would need separate
-%% test cases.
+%% the `sleep` and `kill` commands are available. Windows CI would
+%% need separate test cases.
 
 force_kill_undefined_test() ->
     %% Calling with undefined is a no-op, must not crash.
@@ -34,3 +34,12 @@ force_kill_dead_process_test() ->
     %% Killing an already-dead PID should return ok (not crash).
     %% Use a PID that almost certainly doesn't exist.
     ?assertEqual(ok, loom_os:force_kill(999999999)).
+
+force_kill_zero_pid_test() ->
+    %% PID 0 would send SIGKILL to the entire process group on Unix.
+    %% The catch-all clause must handle this safely (log + return ok).
+    ?assertEqual(ok, loom_os:force_kill(0)).
+
+force_kill_negative_pid_test() ->
+    %% Negative PIDs are invalid; catch-all clause returns ok.
+    ?assertEqual(ok, loom_os:force_kill(-1)).

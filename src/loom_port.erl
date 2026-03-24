@@ -40,7 +40,7 @@
 -record(data, {
     port        :: port() | undefined,
     closed_port :: port() | undefined,  %% preserved after port_close for matching late exit_status
-    os_pid      :: non_neg_integer() | undefined,
+    os_pid      :: pos_integer() | undefined,
     ref         :: reference(),
     owner       :: pid(),
     owner_mon   :: reference(),
@@ -76,7 +76,7 @@ shutdown(Pid) ->
 get_state(Pid) ->
     gen_statem:call(Pid, get_state).
 
--spec get_os_pid(pid()) -> non_neg_integer() | undefined.
+-spec get_os_pid(pid()) -> pos_integer() | undefined.
 get_os_pid(Pid) ->
     gen_statem:call(Pid, get_os_pid).
 
