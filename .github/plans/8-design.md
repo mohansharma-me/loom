@@ -83,6 +83,21 @@ Detection cascade in `loom_gpu_monitor`:
 
 When backend is set explicitly (not `auto`), detection is skipped — the specified module is used directly.
 
+**Logging during detection:** Each step in the cascade logs its outcome at INFO level so operators can trace exactly why a backend was selected:
+
+```
+[info] loom_gpu_monitor: auto-detecting backend for gpu_id=0
+[info] loom_gpu_monitor: trying nvidia backend — nvidia-smi not found on PATH
+[info] loom_gpu_monitor: trying apple backend — os=darwin, arm64=true, sysctl=ok, vm_stat=ok
+[info] loom_gpu_monitor: selected backend=loom_gpu_backend_apple for gpu_id=0
+```
+
+When a backend is set explicitly:
+
+```
+[info] loom_gpu_monitor: using explicitly configured backend=nvidia for gpu_id=0
+```
+
 ### `loom_gpu_monitor` GenServer
 
 Backend-agnostic GenServer that owns the poll loop, caches metrics, checks thresholds, and emits alerts.
@@ -134,7 +149,21 @@ Options map for `start_link/1`:
 1. **init/1** — Resolve backend (auto-detect or explicit), call `BackendMod:init(Opts)`, start first poll timer via `erlang:send_after/3`
 2. **handle_info(poll, Data)** — Call `BackendMod:poll(BackendState)`, store metrics, check thresholds, log metrics, schedule next timer
 3. **handle_call(get_status, ...)** — Return `latest_metrics` from state
-4. **terminate/2** — Cancel timer, clean up
+4. **terminate/2** — Cancel timer, call `BackendMod:terminate(BackendState)`, clean up
+
+**Lifecycle logging:**
+
+```
+[info] loom_gpu_monitor: starting gpu_id=0 backend=loom_gpu_backend_apple poll_interval=5000ms poll_timeout=3000ms
+[info] loom_gpu_monitor: backend init succeeded for gpu_id=0, scheduling first poll
+[info] loom_gpu_monitor: gpu_id=0 stopping, reason=shutdown
+```
+
+On init failure:
+
+```
+[error] loom_gpu_monitor: backend init failed for gpu_id=0 backend=loom_gpu_backend_nvidia reason={error, gpu_index_not_found}
+```
 
 #### Threshold Checking
 
@@ -156,6 +185,20 @@ Default thresholds by backend:
 
 All overridable via the options map.
 
+**Threshold logging:** Every transition is logged at INFO with before/after state:
+
+```
+[info] loom_gpu_monitor: gpu_id=0 threshold BREACHED — memory=96.2% (threshold=95.0%), alerting coordinator
+[info] loom_gpu_monitor: gpu_id=0 threshold CLEARED — memory=83.1% (threshold=95.0%)
+[info] loom_gpu_monitor: gpu_id=0 threshold BREACHED — temperature=87.3C (threshold=85.0C), alerting coordinator
+```
+
+When coordinator is not configured:
+
+```
+[warning] loom_gpu_monitor: gpu_id=0 threshold breached but no coordinator configured, alert not sent
+```
+
 #### Error Handling
 
 **Poll failure:**
@@ -165,14 +208,36 @@ All overridable via the options map.
 - After 3 consecutive failures, alert coordinator: `{gpu_alert, GpuId, poll_failure, ConsecutiveErrors, 3}`
 - Reset counter on next successful poll
 
+**Poll failure logging:**
+
+```
+[warning] loom_gpu_monitor: gpu_id=0 poll failed — reason=timeout, consecutive_errors=1, serving stale metrics
+[warning] loom_gpu_monitor: gpu_id=0 poll failed — reason={parse_error, "unexpected output"}, consecutive_errors=2, serving stale metrics
+[error] loom_gpu_monitor: gpu_id=0 poll failed 3 consecutive times — reason=timeout, alerting coordinator
+[info] loom_gpu_monitor: gpu_id=0 poll recovered after 3 consecutive failures, resetting error counter
+```
+
 **Command timeout:**
 Each backend's `poll/1` uses `open_port({spawn_executable, Path}, ...)` with a timer instead of `os:cmd/1`. This gives proper OS process lifecycle control — if the timer fires, `port_close/1` kills the OS subprocess cleanly. `os:cmd/1` would orphan the subprocess on Erlang process kill.
 
 Configuration: `poll_timeout_ms` (default 3000ms) in the options map, also stored in `#data{}`. Must be less than `poll_interval_ms` to prevent overlapping polls — validated in `init/1`.
 
+**Timeout logging:**
+
+```
+[warning] loom_gpu_monitor: gpu_id=0 poll command timed out after 3000ms, killing subprocess
+```
+
 #### Telemetry
 
-Log structured metrics via `logger:info` on each successful poll. Full `telemetry` / Prometheus integration is tracked separately in P1-09 (#25). Data is always available via `get_status/1`.
+Log structured metrics via `logger:info` on each successful poll with all available fields. Full `telemetry` / Prometheus integration is tracked separately in P1-09 (#25). Data is always available via `get_status/1`.
+
+```
+[info] loom_gpu_monitor: gpu_id=0 poll ok — gpu_util=73.0% mem=62.4/80.0GB(78.0%) temp=71.0C power=245.3W ecc=0
+[info] loom_gpu_monitor: gpu_id=0 poll ok — gpu_util=n/a mem=12.1/16.0GB(75.6%) temp=n/a power=n/a ecc=n/a
+```
+
+Fields with value `-1.0` / `-1` are rendered as `n/a` in logs for readability.
 
 ## Supervision
 
