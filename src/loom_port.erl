@@ -40,7 +40,7 @@
 -record(data, {
     port        :: port() | undefined,
     closed_port :: port() | undefined,  %% preserved after port_close for matching late exit_status
-    os_pid      :: non_neg_integer() | undefined,
+    os_pid      :: pos_integer() | undefined,
     ref         :: reference(),
     owner       :: pid(),
     owner_mon   :: reference(),
@@ -76,7 +76,7 @@ shutdown(Pid) ->
 get_state(Pid) ->
     gen_statem:call(Pid, get_state).
 
--spec get_os_pid(pid()) -> non_neg_integer() | undefined.
+-spec get_os_pid(pid()) -> pos_integer() | undefined.
 get_os_pid(Pid) ->
     gen_statem:call(Pid, get_os_pid).
 
@@ -267,11 +267,14 @@ shutting_down(state_timeout, shutdown_timeout, #data{port = Port} = Data) ->
             {stop, {shutdown, post_close_timeout}}
     end;
 shutting_down(state_timeout, post_close_timeout, Data) ->
-    %% Level 3: process may be orphaned
-    logger:warning("loom_port: orphaned OS process ~p did not exit after post_close_timeout",
+    %% Level 3: force-kill the OS process
+    logger:warning("loom_port: OS process ~p did not exit after post_close_timeout, "
+                   "escalating to force-kill",
                    [Data#data.os_pid]),
+    loom_os:force_kill(Data#data.os_pid),
     notify_owner({loom_port_exit, Data#data.ref, killed}, Data),
-    {stop, {shutdown, post_close_timeout}};
+    %% Clear os_pid so terminate/3 does not redundantly force-kill again.
+    {stop, {shutdown, post_close_timeout}, Data#data{os_pid = undefined}};
 %% Match exit_status from active port OR closed port (late arrival after port_close)
 shutting_down(info, {Port, {exit_status, Status}}, #data{port = Port} = Data) ->
     handle_port_exit(Status, Data);
@@ -302,7 +305,7 @@ shutting_down({call, From}, {send, _Msg}, _Data) ->
 %%--------------------------------------------------------------------
 
 -spec terminate(term(), atom(), #data{}) -> ok.
-terminate(_Reason, _State, #data{port = Port, owner_mon = OwnerMon}) ->
+terminate(_Reason, _State, #data{port = Port, os_pid = OsPid, owner_mon = OwnerMon}) ->
     %% Cleanup: close port if still open, demonitor owner
     case Port =/= undefined andalso erlang:port_info(Port) =/= undefined of
         true ->
@@ -313,6 +316,10 @@ terminate(_Reason, _State, #data{port = Port, owner_mon = OwnerMon}) ->
         false ->
             ok
     end,
+    %% Safety net: force-kill the OS process if we never received its exit_status.
+    %% handle_port_exit/2 clears os_pid when exit_status is received, so
+    %% OsPid =:= undefined means the process is already confirmed dead.
+    loom_os:force_kill(OsPid),
     erlang:demonitor(OwnerMon, [flush]),
     ok.
 
@@ -380,7 +387,7 @@ dispatch_line(Line, State, #data{ref = Ref} = Data) ->
 -spec handle_port_exit(non_neg_integer(), #data{}) -> gen_statem:event_handler_result(atom()).
 handle_port_exit(Status, Data) ->
     notify_owner({loom_port_exit, Data#data.ref, Status}, Data),
-    {stop, {shutdown, {port_exit, Status}}, Data#data{port = undefined}}.
+    {stop, {shutdown, {port_exit, Status}}, Data#data{port = undefined, os_pid = undefined}}.
 
 %% @doc Owner process died, transition to shutting_down.
 -spec handle_owner_down(#data{}) -> gen_statem:event_handler_result(atom()).

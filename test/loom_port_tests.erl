@@ -191,14 +191,18 @@ wait_for_ready() ->
         error(wait_for_ready_timeout)
     end.
 
-%% @doc Wait for loom_port_exit or loom_port_timeout with a 10-second deadline.
+%% @doc Wait for loom_port_exit or loom_port_timeout with a 10-second deadline,
+%% then drain the linked EXIT message so is_process_alive checks succeed.
+%% terminate/3 now calls loom_os:force_kill which shells out, so we must
+%% wait for the EXIT signal rather than assuming instant death.
 wait_for_exit() ->
     receive
         {loom_port_exit,    _, _} -> ok;
         {loom_port_timeout, _}    -> ok
     after 10000 ->
         error(wait_for_exit_timeout)
-    end.
+    end,
+    receive {'EXIT', _, _} -> ok after 5000 -> ok end.
 
 %% --- noeol edge case ---
 
@@ -259,6 +263,9 @@ heartbeat_timeout_in_loading_test() ->
     after 10000 ->
         error(heartbeat_timeout_in_loading_never_fired)
     end,
+    %% Wait for the linked EXIT message — terminate/3 now shells out to
+    %% loom_os:force_kill which takes a few ms.
+    receive {'EXIT', Pid, _} -> ok after 2000 -> ok end,
     ?assertNot(is_process_alive(Pid)).
 
 %% @doc Collect N {loom_port_msg, Ref, _} messages within Timeout ms each.
