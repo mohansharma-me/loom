@@ -42,6 +42,9 @@
     merge_config/1
 ]).
 
+%% Request ID generation (exported for testing)
+-export([generate_request_id/0]).
+
 %% gen_statem callbacks
 -export([
     init/1,
@@ -338,8 +341,7 @@ ready({call, From}, {generate, Prompt, Params},
         false ->
             {keep_state_and_data, [{reply, From, {error, overloaded}}]};
         true ->
-            RequestId = iolist_to_binary([<<"req-">>,
-                integer_to_binary(erlang:unique_integer([positive, monotonic]))]),
+            RequestId = generate_request_id(),
             {CallerPid, _Tag} = From,
             MonRef = erlang:monitor(process, CallerPid),
             ets:insert(ReqsTable, {RequestId, CallerPid, MonRef, PortRef}),
@@ -667,6 +669,18 @@ terminate(_Reason, _State, Data) ->
     catch ets:delete(Data#data.reqs_table),
     catch ets:delete(Data#data.meta_table),
     ok.
+
+%%====================================================================
+%% Request ID generation
+%%====================================================================
+
+%% @doc Generate a unique, monotonically increasing request identifier.
+-spec generate_request_id() -> binary().
+generate_request_id() ->
+    iolist_to_binary([
+        <<"req-">>,
+        integer_to_binary(erlang:unique_integer([positive, monotonic]))
+    ]).
 
 %%====================================================================
 %% Internal helpers

@@ -115,6 +115,20 @@ get_info_from_ets_test() ->
     ets:delete(MetaTable),
     ets:delete(ReqsTable).
 
+%% --- Request ID generation tests ---
+
+-spec request_id_unique_test() -> any().
+request_id_unique_test() ->
+    Ids = [loom_engine_coordinator:generate_request_id() || _ <- lists:seq(1, 100)],
+    UniqueIds = lists:usort(Ids),
+    ?assertEqual(100, length(UniqueIds)).
+
+-spec request_id_format_test() -> any().
+request_id_format_test() ->
+    Id = loom_engine_coordinator:generate_request_id(),
+    ?assert(is_binary(Id)),
+    ?assertMatch(<<"req-", _/binary>>, Id).
+
 %% --- Helpers ---
 
 valid_config() ->
