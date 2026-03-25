@@ -30,6 +30,12 @@
     get_info/1
 ]).
 
+%% ETS table name helpers (exported for routing/testing)
+-export([
+    reqs_table_name/1,
+    meta_table_name/1
+]).
+
 %% Config helpers (exported for testing)
 -export([
     validate_config/1,
@@ -128,6 +134,20 @@ check_values_loop([{Key, Pred} | Rest], Config) ->
     end.
 
 %%====================================================================
+%% ETS table name helpers
+%%====================================================================
+
+-spec reqs_table_name(binary()) -> atom().
+reqs_table_name(EngineId) ->
+    %% ASSUMPTION: EngineId contains only alphanumeric chars and underscores.
+    binary_to_atom(<<"loom_coord_reqs_", EngineId/binary>>).
+
+-spec meta_table_name(binary()) -> atom().
+meta_table_name(EngineId) ->
+    %% ASSUMPTION: EngineId contains only alphanumeric chars and underscores.
+    binary_to_atom(<<"loom_coord_meta_", EngineId/binary>>).
+
+%%====================================================================
 %% Public API (stubs for now)
 %%====================================================================
 
@@ -154,16 +174,35 @@ stop(_Pid) ->
     ok.
 
 -spec get_status(binary()) -> starting | ready | draining | stopped.
-get_status(_EngineId) ->
-    stopped.
+get_status(EngineId) ->
+    MetaTable = meta_table_name(EngineId),
+    case ets:lookup(MetaTable, meta) of
+        [{meta, Status, _, _, _, _, _}] -> Status;
+        [] -> stopped
+    end.
 
 -spec get_load(binary()) -> non_neg_integer().
-get_load(_EngineId) ->
-    0.
+get_load(EngineId) ->
+    ReqsTable = reqs_table_name(EngineId),
+    ets:info(ReqsTable, size).
 
 -spec get_info(binary()) -> map().
-get_info(_EngineId) ->
-    #{}.
+get_info(EngineId) ->
+    MetaTable = meta_table_name(EngineId),
+    ReqsTable = reqs_table_name(EngineId),
+    case ets:lookup(MetaTable, meta) of
+        [{meta, Status, EId, Model, Backend, _PortPid, StartedAt}] ->
+            #{
+                engine_id => EId,
+                model => Model,
+                backend => Backend,
+                status => Status,
+                load => ets:info(ReqsTable, size),
+                started_at => StartedAt
+            };
+        [] ->
+            #{}
+    end.
 
 %%====================================================================
 %% gen_statem callbacks

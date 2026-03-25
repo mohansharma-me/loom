@@ -66,6 +66,55 @@ defaults_not_overridden_test() ->
     ?assertEqual(5000, maps:get(startup_timeout_ms, Merged)),
     ?assertEqual(10, maps:get(max_concurrent, Merged)).
 
+%% --- ETS table name helpers ---
+
+-spec reqs_table_name_test() -> any().
+reqs_table_name_test() ->
+    ?assertEqual(loom_coord_reqs_engine_0,
+                 loom_engine_coordinator:reqs_table_name(<<"engine_0">>)).
+
+-spec meta_table_name_test() -> any().
+meta_table_name_test() ->
+    ?assertEqual(loom_coord_meta_engine_0,
+                 loom_engine_coordinator:meta_table_name(<<"engine_0">>)).
+
+%% --- ETS read API tests ---
+
+-spec get_status_from_ets_test() -> any().
+get_status_from_ets_test() ->
+    MetaTable = loom_coord_meta_test_status,
+    ets:new(MetaTable, [named_table, set, public]),
+    ets:insert(MetaTable, {meta, ready, <<"test">>, <<"mock">>, <<"mock">>,
+                           undefined, 0}),
+    ?assertEqual(ready, loom_engine_coordinator:get_status(<<"test_status">>)),
+    ets:delete(MetaTable).
+
+-spec get_load_from_ets_test() -> any().
+get_load_from_ets_test() ->
+    ReqsTable = loom_coord_reqs_test_load,
+    ets:new(ReqsTable, [named_table, set, public]),
+    ets:insert(ReqsTable, {<<"req-1">>, self(), make_ref(), 0}),
+    ets:insert(ReqsTable, {<<"req-2">>, self(), make_ref(), 0}),
+    ?assertEqual(2, loom_engine_coordinator:get_load(<<"test_load">>)),
+    ets:delete(ReqsTable).
+
+-spec get_info_from_ets_test() -> any().
+get_info_from_ets_test() ->
+    MetaTable = loom_coord_meta_test_info,
+    ReqsTable = loom_coord_reqs_test_info,
+    ets:new(MetaTable, [named_table, set, public]),
+    ets:new(ReqsTable, [named_table, set, public]),
+    ets:insert(MetaTable, {meta, ready, <<"test_info">>, <<"mock_model">>,
+                           <<"mock">>, undefined, 12345}),
+    ets:insert(ReqsTable, {<<"req-1">>, self(), make_ref(), 0}),
+    Info = loom_engine_coordinator:get_info(<<"test_info">>),
+    ?assertEqual(<<"test_info">>, maps:get(engine_id, Info)),
+    ?assertEqual(<<"mock_model">>, maps:get(model, Info)),
+    ?assertEqual(ready, maps:get(status, Info)),
+    ?assertEqual(1, maps:get(load, Info)),
+    ets:delete(MetaTable),
+    ets:delete(ReqsTable).
+
 %% --- Helpers ---
 
 valid_config() ->
