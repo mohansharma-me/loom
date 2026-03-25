@@ -23,7 +23,10 @@
     startup_to_ready_test/1,
     happy_path_generate_test/1,
     drain_with_inflight_test/1,
-    drain_empty_test/1
+    drain_empty_test/1,
+    startup_timeout_test/1,
+    not_ready_rejection_test/1,
+    max_concurrent_test/1
 ]).
 
 %%====================================================================
@@ -35,7 +38,10 @@ all() ->
         startup_to_ready_test,
         happy_path_generate_test,
         drain_with_inflight_test,
-        drain_empty_test
+        drain_empty_test,
+        startup_timeout_test,
+        not_ready_rejection_test,
+        max_concurrent_test
     ].
 
 init_per_suite(Config) ->
@@ -142,6 +148,85 @@ drain_empty_test(_Config) ->
     wait_status(EngineId, stopped, 5000),
     wait_dead(Pid, 5000).
 
+%% @doc Tests that the coordinator stops when the adapter takes longer to
+%% start than the configured startup_timeout_ms. Uses a 30s startup delay
+%% with a 2s timeout — the coordinator should reach `stopped` state.
+startup_timeout_test(_Config) ->
+    Config = (default_config())#{
+        engine_id => <<"test_engine_timeout">>,
+        args => [mock_adapter_path(), "--startup-delay", "30"],
+        startup_timeout_ms => 2000
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    %% ASSUMPTION: 2s timeout fires well before the 30s startup delay completes,
+    %% so the coordinator transitions to stopped.
+    wait_status(EngineId, stopped, 5000),
+    wait_dead(Pid, 5000).
+
+%% @doc Tests that a generate request sent while the coordinator is still
+%% in the `starting` state is rejected with {error, not_ready}.
+%% Uses a 5s startup delay so the adapter is not ready after 200ms.
+not_ready_rejection_test(_Config) ->
+    Config = (default_config())#{
+        engine_id => <<"test_engine_not_ready">>,
+        args => [mock_adapter_path(), "--startup-delay", "5"],
+        startup_timeout_ms => 10000
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    %% Wait briefly — adapter is still loading (5s delay)
+    timer:sleep(200),
+    Result = loom_engine_coordinator:generate(Pid, <<"Hello">>, #{}),
+    ?assertMatch({error, not_ready}, Result),
+    %% Clean up: stop the coordinator
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 10000).
+
+%% @doc Tests that a third concurrent request is rejected with
+%% {error, overloaded} when max_concurrent is set to 2.
+%% Spawns two concurrent callers that each hold an in-flight request,
+%% then attempts a third which should be overloaded.
+max_concurrent_test(_Config) ->
+    Config = (default_config())#{
+        engine_id => <<"test_engine_overload">>,
+        max_concurrent => 2
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+
+    Self = self(),
+
+    %% Spawn two concurrent callers that each issue a generate request
+    %% and report the result back. They hold the slot until we collect tokens.
+    Caller1 = spawn_link(fun() ->
+        Res = loom_engine_coordinator:generate(Pid, <<"Prompt1">>, #{}),
+        Self ! {caller_result, 1, Res},
+        flush_and_wait()
+    end),
+    Caller2 = spawn_link(fun() ->
+        Res = loom_engine_coordinator:generate(Pid, <<"Prompt2">>, #{}),
+        Self ! {caller_result, 2, Res},
+        flush_and_wait()
+    end),
+
+    %% Collect results from both callers — both should succeed
+    Res1 = receive {caller_result, 1, R1} -> R1 after 5000 -> ct:fail("caller 1 timeout") end,
+    Res2 = receive {caller_result, 2, R2} -> R2 after 5000 -> ct:fail("caller 2 timeout") end,
+    ?assertMatch({ok, _}, Res1),
+    ?assertMatch({ok, _}, Res2),
+
+    %% Third request should be rejected — both slots are occupied
+    Res3 = loom_engine_coordinator:generate(Pid, <<"Prompt3">>, #{}),
+    ?assertMatch({error, overloaded}, Res3),
+
+    %% Clean up spawned callers
+    exit(Caller1, kill),
+    exit(Caller2, kill),
+
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000).
+
 %%====================================================================
 %% Helpers
 %%====================================================================
@@ -214,4 +299,12 @@ flush_mailbox() ->
         _ -> flush_mailbox()
     after 0 ->
         ok
+    end.
+
+%% @doc Block and drain all messages for up to 30 seconds.
+%% Used by spawned callers to stay alive (holding their in-flight request
+%% slot) until the test process kills them.
+flush_and_wait() ->
+    receive _ -> flush_and_wait()
+    after 30000 -> ok
     end.
