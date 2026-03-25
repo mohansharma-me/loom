@@ -176,9 +176,13 @@ stop(Pid) ->
 -spec get_status(binary()) -> starting | ready | draining | stopped.
 get_status(EngineId) ->
     MetaTable = meta_table_name(EngineId),
-    case ets:lookup(MetaTable, meta) of
+    try ets:lookup(MetaTable, meta) of
         [{meta, Status, _, _, _, _, _}] -> Status;
         [] -> stopped
+    catch
+        error:badarg ->
+            %% ASSUMPTION: Table was deleted because coordinator terminated.
+            stopped
     end.
 
 -spec get_load(binary()) -> non_neg_integer().
@@ -481,16 +485,122 @@ ready(_EventType, _Event, _Data) ->
 
 -spec draining(gen_statem:event_type(), term(), #data{}) ->
     gen_statem:state_enter_result(atom()) | gen_statem:event_handler_result(atom()).
-draining(enter, _OldState, _Data) ->
-    %% TODO: Implement drain protocol in Task 5
-    keep_state_and_data;
-draining({call, From}, {generate, _Prompt, _Params}, _Data) ->
-    {keep_state_and_data, [{reply, From, {error, draining}}]};
-draining(cast, do_stop, Data) ->
+
+%% --- enter: update meta status, set drain_timeout timer ---
+draining(enter, _OldState, #data{config = Config} = Data) ->
+    update_meta_status(draining, Data),
+    DrainTimeout = maps:get(drain_timeout_ms, Config),
+    {keep_state, Data, [{state_timeout, DrainTimeout, drain_timeout}]};
+
+%% --- drain_timeout: force-cancel all in-flight, stop port, go to stopped ---
+draining(state_timeout, drain_timeout, #data{reqs_table = ReqsTable} = Data) ->
+    ?LOG_WARNING("loom_engine_coordinator ~s: drain timeout expired, "
+                 "force-cancelling ~w in-flight requests",
+                 [Data#data.engine_id, ets:info(ReqsTable, size)]),
+    notify_all_callers_error(ReqsTable, <<"drain_timeout">>, <<"drain_timeout">>),
+    ets:delete_all_objects(ReqsTable),
     stop_port(Data),
     {next_state, stopped, Data#data{port_pid = undefined}};
+
+%% --- generate call: reject with {error, draining} ---
+draining({call, From}, {generate, _Prompt, _Params}, _Data) ->
+    {keep_state_and_data, [{reply, From, {error, draining}}]};
+
+%% --- Token routing (same as ready — forward tokens to callers via ETS lookup) ---
+draining(info, {loom_port_msg, PortRef, {token, Id, _TokenId, Text, Finished}},
+         #data{port_ref = PortRef, reqs_table = ReqsTable} = _Data) ->
+    case ets:lookup(ReqsTable, Id) of
+        [{Id, CallerPid, _MonRef, _}] ->
+            CallerPid ! {loom_token, Id, Text, Finished},
+            keep_state_and_data;
+        [] ->
+            keep_state_and_data
+    end;
+
+%% --- Done handling: forward done, cleanup, check if drain complete ---
+draining(info, {loom_port_msg, PortRef, {done, Id, TokensGenerated, TimeMs}},
+         #data{port_ref = PortRef, reqs_table = ReqsTable} = Data) ->
+    case ets:lookup(ReqsTable, Id) of
+        [{Id, CallerPid, MonRef, _}] ->
+            CallerPid ! {loom_done, Id, #{tokens => TokensGenerated, time_ms => TimeMs}},
+            erlang:demonitor(MonRef, [flush]),
+            ets:delete(ReqsTable, Id);
+        [] ->
+            ok
+    end,
+    maybe_drain_complete(Data);
+
+%% --- Error handling: forward error, cleanup, check if drain complete ---
+draining(info, {loom_port_msg, PortRef, {error, Id, Code, Message}},
+         #data{port_ref = PortRef, reqs_table = ReqsTable} = Data) when Id =/= undefined ->
+    case ets:lookup(ReqsTable, Id) of
+        [{Id, CallerPid, MonRef, _}] ->
+            CallerPid ! {loom_error, Id, Code, Message},
+            erlang:demonitor(MonRef, [flush]),
+            ets:delete(ReqsTable, Id);
+        [] ->
+            ok
+    end,
+    maybe_drain_complete(Data);
+
+%% --- Port crash: notify all in-flight, clear ETS, go to stopped (NO self-heal) ---
+draining(info, {loom_port_exit, _Ref, ExitCode},
+         #data{reqs_table = ReqsTable, engine_id = EngineId} = Data) ->
+    NormalizedCode = normalize_exit_code(ExitCode),
+    NormalizedBin = normalize_exit_code_binary(NormalizedCode),
+    ?LOG_WARNING("loom_engine_coordinator ~s: port crashed during drain with code ~p",
+                 [EngineId, NormalizedCode]),
+    notify_all_callers_error(ReqsTable, <<"engine_crashed">>, NormalizedBin),
+    ets:delete_all_objects(ReqsTable),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+
+%% --- Port heartbeat timeout during drain ---
+draining(info, {loom_port_timeout, _Ref}, #data{reqs_table = ReqsTable} = Data) ->
+    ?LOG_WARNING("loom_engine_coordinator ~s: port heartbeat timeout during drain",
+                 [Data#data.engine_id]),
+    notify_all_callers_error(ReqsTable, <<"engine_timeout">>, <<"heartbeat_timeout">>),
+    ets:delete_all_objects(ReqsTable),
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+
+%% --- Caller death (DOWN): cancel request, cleanup, check if drain complete ---
+draining(info, {'DOWN', MonRef, process, CallerPid, _Reason},
+         #data{reqs_table = ReqsTable, port_pid = PortPid} = Data) ->
+    case ets:match_object(ReqsTable, {'_', CallerPid, MonRef, '_'}) of
+        [{RequestId, _CallerPid, _MonRef, _PortRef} | _] ->
+            catch loom_port:send(PortPid, {cancel, RequestId}),
+            ets:delete(ReqsTable, RequestId);
+        [] ->
+            ok
+    end,
+    maybe_drain_complete(Data);
+
+%% --- do_shutdown: already draining, keep_state ---
+draining(cast, do_shutdown, _Data) ->
+    keep_state_and_data;
+
+%% --- do_stop: force-cancel all in-flight, stop port, go to stopped ---
+draining(cast, do_stop, #data{reqs_table = ReqsTable} = Data) ->
+    notify_all_callers_error(ReqsTable, <<"engine_stopped">>, <<"stopped">>),
+    ets:delete_all_objects(ReqsTable),
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+
+%% --- EXIT from port process (handled by loom_port_exit notification) ---
+draining(info, {'EXIT', PortPid, _Reason}, #data{port_pid = PortPid} = _Data) ->
+    keep_state_and_data;
+
+%% --- EXIT from other linked processes, loom_port_error, gpu_alert: keep state ---
 draining(info, {'EXIT', _Pid, _Reason}, _Data) ->
     keep_state_and_data;
+draining(info, {loom_port_error, _Ref, _Error}, _Data) ->
+    keep_state_and_data;
+
+%% --- Stale port messages (mismatched PortRef) ---
+draining(info, {loom_port_msg, _StaleRef, _Msg}, _Data) ->
+    keep_state_and_data;
+
+%% --- Catch-all ---
 draining(_EventType, _Event, _Data) ->
     keep_state_and_data.
 
@@ -560,6 +670,19 @@ normalize_exit_code(_Other) -> 1.
 normalize_exit_code_binary(killed) -> <<"killed">>;
 normalize_exit_code_binary(Code) when is_integer(Code) ->
     integer_to_binary(Code).
+
+%% @doc Check if all in-flight requests have completed during drain.
+%% If the requests table is empty, stop the port and transition to stopped.
+-spec maybe_drain_complete(#data{}) ->
+    gen_statem:event_handler_result(atom()).
+maybe_drain_complete(#data{reqs_table = ReqsTable} = Data) ->
+    case ets:info(ReqsTable, size) of
+        0 ->
+            stop_port(Data),
+            {next_state, stopped, Data#data{port_pid = undefined}};
+        _N ->
+            keep_state_and_data
+    end.
 
 %% @doc Notify all in-flight callers with an error message and demonitor them.
 %% Iterates the requests ETS table and sends {loom_error, RequestId, Code, Detail}

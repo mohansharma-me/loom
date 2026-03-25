@@ -21,7 +21,9 @@
 %% Test cases
 -export([
     startup_to_ready_test/1,
-    happy_path_generate_test/1
+    happy_path_generate_test/1,
+    drain_with_inflight_test/1,
+    drain_empty_test/1
 ]).
 
 %%====================================================================
@@ -31,7 +33,9 @@
 all() ->
     [
         startup_to_ready_test,
-        happy_path_generate_test
+        happy_path_generate_test,
+        drain_with_inflight_test,
+        drain_empty_test
     ].
 
 init_per_suite(Config) ->
@@ -105,6 +109,37 @@ happy_path_generate_test(_Config) ->
     ?assertEqual(0, loom_engine_coordinator:get_load(EngineId)),
 
     loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000).
+
+%% @doc Tests graceful drain with an in-flight request: initiates a generate,
+%% then shutdown. New requests must be rejected with {error, draining}. The
+%% in-flight request completes normally. After completion, coordinator stops.
+drain_with_inflight_test(_Config) ->
+    Config = default_config(),
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+    {ok, RequestId} = loom_engine_coordinator:generate(Pid, <<"Hello">>, #{}),
+    ok = loom_engine_coordinator:shutdown(Pid),
+    ?assertMatch({error, draining},
+                 loom_engine_coordinator:generate(Pid, <<"World">>, #{})),
+    _Tokens = collect_tokens(RequestId, 5, 5000),
+    receive
+        {loom_done, RequestId, _Stats} -> ok
+    after 5000 -> ct:fail("no loom_done during drain")
+    end,
+    wait_status(EngineId, stopped, 5000),
+    wait_dead(Pid, 5000).
+
+%% @doc Tests drain with no in-flight requests: shutdown should immediately
+%% transition to stopped and the coordinator process should terminate.
+drain_empty_test(_Config) ->
+    Config = default_config(),
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+    ok = loom_engine_coordinator:shutdown(Pid),
+    wait_status(EngineId, stopped, 5000),
     wait_dead(Pid, 5000).
 
 %%====================================================================
