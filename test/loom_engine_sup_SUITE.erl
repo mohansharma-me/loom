@@ -21,7 +21,12 @@
 %% Test cases
 -export([
     start_with_config_test/1,
-    start_with_no_gpus_test/1
+    start_with_no_gpus_test/1,
+    different_configs_test/1,
+    coordinator_crash_restarts_all_test/1,
+    monitor_crash_restarts_only_monitor_test/1,
+    max_restart_intensity_test/1,
+    monitor_alerts_after_restart_test/1
 ]).
 
 %%====================================================================
@@ -31,7 +36,12 @@
 all() ->
     [
         start_with_config_test,
-        start_with_no_gpus_test
+        start_with_no_gpus_test,
+        different_configs_test,
+        coordinator_crash_restarts_all_test,
+        monitor_crash_restarts_only_monitor_test,
+        max_restart_intensity_test,
+        monitor_alerts_after_restart_test
     ].
 
 init_per_suite(Config) ->
@@ -102,6 +112,115 @@ start_with_no_gpus_test(_Config) ->
 
     stop_sup(SupPid).
 
+%% @doc Two supervisors with different engine configs start and operate
+%% independently.
+different_configs_test(_Config) ->
+    Config1 = engine_config(<<"sup_diff_1">>, [0]),
+    Config2 = engine_config(<<"sup_diff_2">>, [1]),
+    {ok, Sup1} = loom_engine_sup:start_link(Config1),
+    {ok, Sup2} = loom_engine_sup:start_link(Config2),
+    ?assert(is_process_alive(Sup1)),
+    ?assert(is_process_alive(Sup2)),
+    ?assertNotEqual(Sup1, Sup2),
+    ?assertEqual(Sup1, whereis(loom_engine_sup:sup_name(<<"sup_diff_1">>))),
+    ?assertEqual(Sup2, whereis(loom_engine_sup:sup_name(<<"sup_diff_2">>))),
+    ?assertEqual(2, length(supervisor:which_children(Sup1))),
+    ?assertEqual(2, length(supervisor:which_children(Sup2))),
+    wait_status(<<"sup_diff_1">>, ready, 10000),
+    wait_status(<<"sup_diff_2">>, ready, 10000),
+    stop_sup(Sup1),
+    stop_sup(Sup2).
+
+%% @doc Kill coordinator, verify ALL children get new pids (rest_for_one).
+coordinator_crash_restarts_all_test(_Config) ->
+    EngineId = <<"sup_crash_all">>,
+    EngineConfig = engine_config(EngineId, [0, 1]),
+    {ok, SupPid} = loom_engine_sup:start_link(EngineConfig),
+    wait_status(EngineId, ready, 10000),
+    OldCoordPid = find_child(SupPid, coordinator),
+    OldMon0Pid = find_child(SupPid, {gpu_monitor, 0}),
+    OldMon1Pid = find_child(SupPid, {gpu_monitor, 1}),
+    ?assert(is_pid(OldCoordPid)),
+    ?assert(is_pid(OldMon0Pid)),
+    ?assert(is_pid(OldMon1Pid)),
+    exit(OldCoordPid, kill),
+    %% Wait for the coordinator to actually be replaced before checking status
+    NewCoordPid = wait_child_changed(SupPid, coordinator, OldCoordPid, 15000),
+    wait_status(EngineId, ready, 15000),
+    NewMon0Pid = find_child(SupPid, {gpu_monitor, 0}),
+    NewMon1Pid = find_child(SupPid, {gpu_monitor, 1}),
+    ?assertNotEqual(OldCoordPid, NewCoordPid),
+    ?assertNotEqual(OldMon0Pid, NewMon0Pid),
+    ?assertNotEqual(OldMon1Pid, NewMon1Pid),
+    ?assertNot(is_process_alive(OldCoordPid)),
+    ?assertNot(is_process_alive(OldMon0Pid)),
+    ?assertNot(is_process_alive(OldMon1Pid)),
+    ?assert(is_process_alive(NewCoordPid)),
+    ?assert(is_process_alive(NewMon0Pid)),
+    ?assert(is_process_alive(NewMon1Pid)),
+    stop_sup(SupPid).
+
+%% @doc Kill the last monitor, verify coordinator and earlier monitor keep
+%% their pids. Under rest_for_one, only children started AFTER the crashed
+%% child are restarted — killing the last monitor leaves all others intact.
+monitor_crash_restarts_only_monitor_test(_Config) ->
+    EngineId = <<"sup_crash_mon">>,
+    EngineConfig = engine_config(EngineId, [0, 1]),
+    {ok, SupPid} = loom_engine_sup:start_link(EngineConfig),
+    wait_status(EngineId, ready, 10000),
+    OldCoordPid = find_child(SupPid, coordinator),
+    OldMon0Pid = find_child(SupPid, {gpu_monitor, 0}),
+    OldMon1Pid = find_child(SupPid, {gpu_monitor, 1}),
+    %% Kill the LAST monitor (gpu 1) so rest_for_one doesn't cascade
+    exit(OldMon1Pid, kill),
+    NewMon1Pid = wait_child_changed(SupPid, {gpu_monitor, 1}, OldMon1Pid, 5000),
+    ?assertEqual(OldCoordPid, find_child(SupPid, coordinator)),
+    ?assertEqual(OldMon0Pid, find_child(SupPid, {gpu_monitor, 0})),
+    ?assertNotEqual(OldMon1Pid, NewMon1Pid),
+    ?assert(is_process_alive(NewMon1Pid)),
+    stop_sup(SupPid).
+
+%% @doc Crash coordinator past max_restarts=2, verify supervisor terminates.
+max_restart_intensity_test(_Config) ->
+    EngineId = <<"sup_max_restart">>,
+    EngineConfig = (engine_config(EngineId, []))#{
+        max_restarts => 2,
+        max_period => 60,
+        adapter_args => [mock_adapter_path(), "--startup-delay", "30"],
+        startup_timeout_ms => 60000
+    },
+    {ok, SupPid} = loom_engine_sup:start_link(EngineConfig),
+    SupMonRef = erlang:monitor(process, SupPid),
+    kill_coordinator_n_times(SupPid, 3, undefined),
+    receive
+        {'DOWN', SupMonRef, process, SupPid, shutdown} -> ok;
+        {'DOWN', SupMonRef, process, SupPid, _Reason} -> ok
+    after 15000 ->
+        ct:fail("supervisor did not terminate after exceeding max restarts")
+    end.
+
+%% @doc After coordinator crash + restart, verify monitors are functional
+%% with new coordinator.
+monitor_alerts_after_restart_test(_Config) ->
+    EngineId = <<"sup_alert_restart">>,
+    EngineConfig = engine_config(EngineId, [0]),
+    {ok, SupPid} = loom_engine_sup:start_link(EngineConfig),
+    wait_status(EngineId, ready, 10000),
+    OldCoordPid = find_child(SupPid, coordinator),
+    exit(OldCoordPid, kill),
+    %% Wait for the coordinator to actually be replaced before checking status
+    NewCoordPid = wait_child_changed(SupPid, coordinator, OldCoordPid, 15000),
+    wait_status(EngineId, ready, 15000),
+    ?assertNotEqual(OldCoordPid, NewCoordPid),
+    NewMonPid = find_child(SupPid, {gpu_monitor, 0}),
+    ?assert(is_process_alive(NewMonPid)),
+    {ok, Metrics} = loom_gpu_monitor:force_poll(NewMonPid),
+    ?assert(is_map(Metrics)),
+    ?assertNot(is_process_alive(OldCoordPid)),
+    ?assert(is_process_alive(NewCoordPid)),
+    ?assert(is_process_alive(NewMonPid)),
+    stop_sup(SupPid).
+
 %%====================================================================
 %% Helpers
 %%====================================================================
@@ -168,6 +287,36 @@ stop_sup(SupPid) ->
         {'DOWN', MonRef, process, SupPid, _} -> ok
     after 10000 ->
         ct:fail("supervisor did not stop")
+    end.
+
+%% @doc Find a child pid by id from a supervisor.
+find_child(SupPid, ChildId) ->
+    Children = supervisor:which_children(SupPid),
+    case lists:keyfind(ChildId, 1, Children) of
+        {ChildId, Pid, _, _} when is_pid(Pid) -> Pid;
+        _ -> undefined
+    end.
+
+%% @doc Wait until a child's pid changes from OldPid.
+wait_child_changed(SupPid, ChildId, OldPid, Timeout) when Timeout > 0 ->
+    case find_child(SupPid, ChildId) of
+        Pid when is_pid(Pid), Pid =/= OldPid -> Pid;
+        _ ->
+            timer:sleep(50),
+            wait_child_changed(SupPid, ChildId, OldPid, Timeout - 50)
+    end;
+wait_child_changed(_SupPid, ChildId, _OldPid, _Timeout) ->
+    ct:fail(io_lib:format("wait_child_changed: ~p never changed", [ChildId])).
+
+%% @doc Kill the coordinator N times, waiting for each restart.
+kill_coordinator_n_times(_SupPid, 0, _LastPid) -> ok;
+kill_coordinator_n_times(SupPid, N, LastPid) ->
+    case is_process_alive(SupPid) of
+        false -> ok;
+        true ->
+            CoordPid = wait_child_changed(SupPid, coordinator, LastPid, 10000),
+            exit(CoordPid, kill),
+            kill_coordinator_n_times(SupPid, N - 1, CoordPid)
     end.
 
 flush_mailbox() ->
