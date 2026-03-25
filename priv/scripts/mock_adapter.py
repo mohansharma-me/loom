@@ -28,6 +28,10 @@ import traceback
 # ASSUMPTION: Fixed mock tokens simulate a generate response; real adapter will stream actual model output.
 MOCK_TOKENS = ["Hello", "from", "Loom", "mock", "adapter"]
 
+# ASSUMPTION: TOKEN_DELAY defaults to 0.0 (no delay) so existing tests pass unchanged.
+# Set via --token-delay CLI argument in main() before the command loop starts.
+TOKEN_DELAY = 0.0
+
 
 def send_msg(msg):
     """Write a JSON message + newline to stdout and flush immediately."""
@@ -60,26 +64,26 @@ def handle_generate(msg):
         return [{"type": "error", "code": "missing_field",
                  "message": "generate request missing 'id' field"}]
 
-    responses = []
+    # ASSUMPTION: Tokens are sent inline (via send_msg) so that TOKEN_DELAY
+    # can be applied between each token. The function returns [] so the
+    # caller's response-sending loop has nothing extra to send.
     for i, token_text in enumerate(MOCK_TOKENS):
-        responses.append(
-            {
-                "type": "token",
-                "id": req_id,
-                "token_id": i + 1,
-                "text": token_text,
-                "finished": False,
-            }
-        )
-    responses.append(
-        {
-            "type": "done",
+        if i > 0 and TOKEN_DELAY > 0:
+            time.sleep(TOKEN_DELAY)
+        send_msg({
+            "type": "token",
             "id": req_id,
-            "tokens_generated": len(MOCK_TOKENS),
-            "time_ms": 0,
-        }
-    )
-    return responses
+            "token_id": i + 1,
+            "text": token_text,
+            "finished": False,
+        })
+    send_msg({
+        "type": "done",
+        "id": req_id,
+        "tokens_generated": len(MOCK_TOKENS),
+        "time_ms": 0,
+    })
+    return []
 
 
 def handle_cancel(msg):
@@ -192,7 +196,17 @@ def main():
         default=5.0,
         help="Interval between heartbeats during startup delay in seconds (default: 5.0)"
     )
+    parser.add_argument(
+        '--token-delay',
+        type=float,
+        default=0.0,
+        help="Delay in seconds between each generated token (default: 0.0)"
+    )
     args = parser.parse_args()
+
+    # Set module-level TOKEN_DELAY so handle_generate can use it.
+    global TOKEN_DELAY
+    TOKEN_DELAY = args.token_delay
 
     print("[mock_adapter] started, reading from stdin", file=sys.stderr)
 
