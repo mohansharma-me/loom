@@ -35,7 +35,7 @@ Standards and practices that apply across all phases.
 
 ### Supervision & Monitoring
 - [x] `loom_gpu_monitor` GenServer for GPU health polling — [#8](https://github.com/mohansharma-me/loom/issues/8) `P0-07`
-- [ ] `loom_engine_coordinator` GenServer for engine lifecycle — [#9](https://github.com/mohansharma-me/loom/issues/9) `P0-08`
+- [x] `loom_engine_coordinator` GenServer for engine lifecycle — [#9](https://github.com/mohansharma-me/loom/issues/9) `P0-08`
 - [ ] `loom_engine_sup` rest_for_one supervisor — [#10](https://github.com/mohansharma-me/loom/issues/10) `P0-09`
 - [ ] `/v1/chat/completions` endpoint with SSE streaming (Cowboy) — [#11](https://github.com/mohansharma-me/loom/issues/11) `P0-10`
 - [ ] Wire all components into application supervisor tree — [#12](https://github.com/mohansharma-me/loom/issues/12) `P0-11`
@@ -135,13 +135,13 @@ Standards and practices that apply across all phases.
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 4 | 0 | 0 | 4 |
-| Phase 0 | 17 | 8 | 0 | 9 |
+| Phase 0 | 17 | 9 | 0 | 8 |
 | Phase 1 | 11 | 0 | 0 | 11 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **53** | **8** | **0** | **45** |
+| **Total** | **53** | **9** | **0** | **44** |
 
 ## What's Next
 
@@ -154,4 +154,5 @@ Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 5. ~~**#5 — P0-05:** Port GenServer (loom_port gen_statem)~~ ✓
 6. ~~**#6 — P0-06:** Python adapter wrapping vLLM AsyncLLMEngine~~ ✓
 7. ~~**#8 — P0-07:** GPU health monitoring (loom_gpu_monitor)~~ ✓
-8. **#9 — P0-08:** Engine lifecycle management (loom_engine_coordinator)
+8. ~~**#9 — P0-08:** Engine lifecycle management (loom_engine_coordinator)~~ ✓
+9. **#10 — P0-09:** Engine supervisor (loom_engine_sup rest_for_one)
