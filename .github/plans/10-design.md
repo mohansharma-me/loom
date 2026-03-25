@@ -24,21 +24,25 @@ Restart semantics:
 
 **Problem:** GPU monitors need the coordinator's pid to send alerts, but the pid changes on every restart.
 
-**Solution:** The supervisor module exports a `start_monitor/2` helper used as the MFA in monitor child specs. This function looks up the coordinator pid from the supervisor's own children list before starting the monitor.
+**Solution:** The supervisor module exports a `start_monitor/2` helper used as the MFA in monitor child specs. This function looks up the coordinator pid by reading the owner of its named ETS meta table (`ets:info(MetaTable, owner)`).
+
+**Implementation note (deviation from original design):** The original design used `supervisor:which_children/1` to find the coordinator. This was discovered to deadlock during implementation because `start_monitor` is called during the supervisor's own child startup sequence — a synchronous call to the supervisor process that is itself blocked starting children (calling_self). The ETS-based lookup avoids this: the coordinator creates its named ETS tables in `init/1` (synchronous, before the supervisor moves to the next child), so by the time any monitor starts, the table exists and its owner is the coordinator pid.
 
 ```erlang
 start_monitor(EngineId, GpuOpts) ->
-    SupName = sup_name(EngineId),
-    Children = supervisor:which_children(SupName),
-    case lists:keyfind(coordinator, 1, Children) of
-        {coordinator, Pid, _, _} when is_pid(Pid) ->
+    MetaTable = loom_engine_coordinator:meta_table_name(EngineId),
+    try ets:info(MetaTable, owner) of
+        Pid when is_pid(Pid) ->
             loom_gpu_monitor:start_link(GpuOpts#{coordinator => Pid});
-        _ ->
+        undefined ->
+            {error, coordinator_not_found}
+    catch
+        error:badarg ->
             {error, coordinator_not_found}
     end.
 ```
 
-**Why this is safe:** Under `rest_for_one`, the coordinator is always restarted before the monitors. By the time `start_monitor` executes, the coordinator is guaranteed to be alive.
+**Why this is safe:** OTP supervisors start children sequentially in spec-list order. The coordinator is first, so its ETS tables exist before any monitor starts. On restart under `rest_for_one`, the coordinator is restarted first, creating fresh ETS tables before monitors are restarted.
 
 **Failure mode:** If the coordinator somehow fails to start, `start_monitor` returns `{error, coordinator_not_found}`, which triggers the supervisor's restart logic. If this persists, the supervisor exhausts its restart intensity and terminates — fail-fast, no silent degradation.
 
@@ -82,7 +86,7 @@ Coordinator child receives:
 }
 ```
 
-**GPU monitor option passthrough:** Similarly, monitor-specific options (`poll_timeout_ms`, `thresholds`, `backend`) are forwarded if present; otherwise monitor defaults apply. `allow_mock_backend` is forwarded from the top-level config.
+**GPU monitor option passthrough:** Monitor-specific options (`poll_timeout_ms`, `thresholds`) are forwarded if present; otherwise monitor defaults apply. `allow_mock_backend` is forwarded from the top-level config. Note: the top-level `backend` key is NOT forwarded because the engine config stores it as a binary (e.g., `<<"mock">>`) while `loom_gpu_monitor` expects an atom (e.g., `mock`). The monitor uses auto-detection by default.
 
 Each GPU monitor child receives (via `start_monitor`):
 ```erlang
@@ -92,7 +96,7 @@ Each GPU monitor child receives (via `start_monitor`):
     allow_mock_backend => true/false,
     coordinator => <coordinator_pid>
     %% Plus any optional keys passed through:
-    %% poll_timeout_ms, thresholds, backend (GPU backend atom)
+    %% poll_timeout_ms, thresholds
 }
 ```
 

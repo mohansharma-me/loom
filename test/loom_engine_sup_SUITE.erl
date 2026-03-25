@@ -25,8 +25,17 @@
     different_configs_test/1,
     coordinator_crash_restarts_all_test/1,
     monitor_crash_restarts_only_monitor_test/1,
+    middle_monitor_crash_cascades_test/1,
     max_restart_intensity_test/1,
-    monitor_alerts_after_restart_test/1
+    monitor_alerts_after_restart_test/1,
+    config_missing_engine_id_test/1,
+    config_invalid_engine_id_format_test/1,
+    config_missing_adapter_cmd_test/1,
+    config_invalid_adapter_cmd_test/1,
+    config_invalid_gpus_test/1,
+    config_invalid_max_restarts_test/1,
+    config_invalid_drain_timeout_test/1,
+    start_monitor_coordinator_not_found_test/1
 ]).
 
 %%====================================================================
@@ -40,8 +49,17 @@ all() ->
         different_configs_test,
         coordinator_crash_restarts_all_test,
         monitor_crash_restarts_only_monitor_test,
+        middle_monitor_crash_cascades_test,
         max_restart_intensity_test,
-        monitor_alerts_after_restart_test
+        monitor_alerts_after_restart_test,
+        config_missing_engine_id_test,
+        config_invalid_engine_id_format_test,
+        config_missing_adapter_cmd_test,
+        config_invalid_adapter_cmd_test,
+        config_invalid_gpus_test,
+        config_invalid_max_restarts_test,
+        config_invalid_drain_timeout_test,
+        start_monitor_coordinator_not_found_test
     ].
 
 init_per_suite(Config) ->
@@ -221,6 +239,93 @@ monitor_alerts_after_restart_test(_Config) ->
     ?assert(is_process_alive(NewMonPid)),
     stop_sup(SupPid).
 
+%% @doc Kill a middle monitor (gpu 0 out of [0, 1, 2]) and verify that
+%% rest_for_one cascades: monitors 1 and 2 also restart, but the
+%% coordinator is unaffected.
+middle_monitor_crash_cascades_test(_Config) ->
+    EngineId = <<"sup_crash_mid">>,
+    EngineConfig = engine_config(EngineId, [0, 1, 2]),
+    {ok, SupPid} = loom_engine_sup:start_link(EngineConfig),
+    wait_status(EngineId, ready, 10000),
+    OldCoordPid = find_child(SupPid, coordinator),
+    OldMon0Pid = find_child(SupPid, {gpu_monitor, 0}),
+    OldMon1Pid = find_child(SupPid, {gpu_monitor, 1}),
+    OldMon2Pid = find_child(SupPid, {gpu_monitor, 2}),
+    %% Kill the FIRST monitor — rest_for_one should cascade to monitors 1 and 2
+    exit(OldMon0Pid, kill),
+    NewMon0Pid = wait_child_changed(SupPid, {gpu_monitor, 0}, OldMon0Pid, 5000),
+    %% Wait for monitor 2 to also be replaced (it's after monitor 0)
+    NewMon2Pid = wait_child_changed(SupPid, {gpu_monitor, 2}, OldMon2Pid, 5000),
+    NewMon1Pid = find_child(SupPid, {gpu_monitor, 1}),
+    %% Coordinator should be unaffected
+    ?assertEqual(OldCoordPid, find_child(SupPid, coordinator)),
+    %% All three monitors should have new pids
+    ?assertNotEqual(OldMon0Pid, NewMon0Pid),
+    ?assertNotEqual(OldMon1Pid, NewMon1Pid),
+    ?assertNotEqual(OldMon2Pid, NewMon2Pid),
+    ?assert(is_process_alive(NewMon0Pid)),
+    ?assert(is_process_alive(NewMon1Pid)),
+    ?assert(is_process_alive(NewMon2Pid)),
+    stop_sup(SupPid).
+
+%%--------------------------------------------------------------------
+%% Config validation rejection tests
+%%--------------------------------------------------------------------
+
+%% @doc Missing engine_id is rejected.
+config_missing_engine_id_test(_Config) ->
+    Config = maps:remove(engine_id, engine_config(<<"dummy">>, [])),
+    ?assertMatch({error, {missing_required, engine_id}},
+                 loom_engine_sup:start_link(Config)).
+
+%% @doc engine_id with invalid characters is rejected.
+config_invalid_engine_id_format_test(_Config) ->
+    Config = (engine_config(<<"dummy">>, []))#{engine_id => <<"hello world">>},
+    ?assertMatch({error, {invalid_engine_id, bad_format}},
+                 loom_engine_sup:start_link(Config)).
+
+%% @doc Missing adapter_cmd is rejected.
+config_missing_adapter_cmd_test(_Config) ->
+    Config = maps:remove(adapter_cmd, engine_config(<<"dummy">>, [])),
+    ?assertMatch({error, {missing_required, adapter_cmd}},
+                 loom_engine_sup:start_link(Config)).
+
+%% @doc Non-string adapter_cmd is rejected.
+config_invalid_adapter_cmd_test(_Config) ->
+    Config = (engine_config(<<"dummy">>, []))#{adapter_cmd => [1, 2, 3]},
+    ?assertMatch({error, {invalid_adapter_cmd, not_printable_string}},
+                 loom_engine_sup:start_link(Config)).
+
+%% @doc Non-list gpus value is rejected.
+config_invalid_gpus_test(_Config) ->
+    Config = (engine_config(<<"dummy">>, []))#{gpus => "not_a_list"},
+    %% "not_a_list" is a charlist which IS a list in Erlang, so use an atom
+    Config2 = Config#{gpus => not_a_list},
+    ?assertMatch({error, {invalid_gpus, expected_list, not_a_list}},
+                 loom_engine_sup:start_link(Config2)).
+
+%% @doc Non-integer max_restarts is rejected.
+config_invalid_max_restarts_test(_Config) ->
+    Config = (engine_config(<<"dummy">>, []))#{max_restarts => -1},
+    ?assertMatch({error, {invalid_max_restarts, expected_non_neg_integer, -1}},
+                 loom_engine_sup:start_link(Config)).
+
+%% @doc Non-integer drain_timeout_ms is rejected.
+config_invalid_drain_timeout_test(_Config) ->
+    Config = (engine_config(<<"dummy">>, []))#{drain_timeout_ms => <<"30000">>},
+    ?assertMatch({error, {invalid_drain_timeout_ms, expected_pos_integer, <<"30000">>}},
+                 loom_engine_sup:start_link(Config)).
+
+%%--------------------------------------------------------------------
+%% Direct error path tests
+%%--------------------------------------------------------------------
+
+%% @doc start_monitor/2 with a nonexistent engine returns coordinator_not_found.
+start_monitor_coordinator_not_found_test(_Config) ->
+    ?assertMatch({error, coordinator_not_found},
+                 loom_engine_sup:start_monitor(<<"nonexistent_engine">>,
+                                               #{gpu_id => 0})).
+
 %%====================================================================
 %% Helpers
 %%====================================================================
@@ -249,7 +354,7 @@ engine_config(EngineId, Gpus) ->
 test_engine_ids() ->
     [<<"sup_test_1">>, <<"sup_test_no_gpu">>, <<"sup_diff_1">>,
      <<"sup_diff_2">>, <<"sup_crash_all">>, <<"sup_crash_mon">>,
-     <<"sup_max_restart">>, <<"sup_alert_restart">>].
+     <<"sup_crash_mid">>, <<"sup_max_restart">>, <<"sup_alert_restart">>].
 
 wait_status(EngineId, Status, Timeout) when Timeout > 0 ->
     case catch loom_engine_coordinator:get_status(EngineId) of
