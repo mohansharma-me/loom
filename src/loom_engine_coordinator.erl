@@ -106,6 +106,19 @@ check_required([Key | Rest], Config) ->
             {error, {empty_required, Key}};
         {ok, Val} when is_list(Val), length(Val) =:= 0, Key =:= command ->
             {error, {empty_required, Key}};
+        {ok, Val} when Key =:= engine_id, is_binary(Val) ->
+            %% ASSUMPTION: engine_id is used to construct ETS table names via
+            %% binary_to_atom/1. Restricting to [a-zA-Z0-9_] and max 64 bytes
+            %% prevents atom table pollution from untrusted input.
+            case byte_size(Val) > 64 of
+                true ->
+                    {error, {invalid_engine_id, too_long}};
+                false ->
+                    case re:run(Val, <<"^[a-zA-Z0-9_]+$">>) of
+                        {match, _} -> check_required(Rest, Config);
+                        nomatch -> {error, {invalid_engine_id, bad_format}}
+                    end
+            end;
         {ok, _} -> check_required(Rest, Config);
         error -> {error, {missing_required, Key}}
     end.
@@ -191,24 +204,30 @@ get_status(EngineId) ->
 -spec get_load(binary()) -> non_neg_integer().
 get_load(EngineId) ->
     ReqsTable = reqs_table_name(EngineId),
-    ets:info(ReqsTable, size).
+    try ets:info(ReqsTable, size) of
+        undefined -> 0;
+        Size -> Size
+    catch
+        error:badarg -> 0
+    end.
 
 -spec get_info(binary()) -> map().
 get_info(EngineId) ->
     MetaTable = meta_table_name(EngineId),
     ReqsTable = reqs_table_name(EngineId),
-    case ets:lookup(MetaTable, meta) of
+    try ets:lookup(MetaTable, meta) of
         [{meta, Status, EId, Model, Backend, _PortPid, StartedAt}] ->
-            #{
-                engine_id => EId,
-                model => Model,
-                backend => Backend,
-                status => Status,
-                load => ets:info(ReqsTable, size),
-                started_at => StartedAt
-            };
+            Load = try ets:info(ReqsTable, size) of
+                       undefined -> 0;
+                       S -> S
+                   catch error:badarg -> 0
+                   end,
+            #{engine_id => EId, model => Model, backend => Backend,
+              status => Status, load => Load, started_at => StartedAt};
         [] ->
             #{}
+    catch
+        error:badarg -> #{}
     end.
 
 %%====================================================================
@@ -322,10 +341,17 @@ starting(cast, do_shutdown, Data) ->
 starting(cast, do_stop, Data) ->
     stop_port(Data),
     {next_state, stopped, Data#data{port_pid = undefined}};
-starting(info, {loom_port_error, _Ref, _Error}, _Data) ->
-    %% Log and ignore decode errors during startup
+starting(info, {loom_port_error, _Ref, Error}, #data{engine_id = EngineId}) ->
+    ?LOG_WARNING("Engine ~s port error during startup: ~p",
+                 [EngineId, Error], #{engine_id => EngineId}),
     keep_state_and_data;
-starting(_EventType, _Event, _Data) ->
+starting({call, From}, Msg, #data{engine_id = EngineId}) ->
+    ?LOG_WARNING("Engine ~s unexpected call in starting: ~p",
+                 [EngineId, Msg], #{engine_id => EngineId}),
+    {keep_state_and_data, [{reply, From, {error, unknown_call}}]};
+starting(EventType, Event, #data{engine_id = EngineId}) ->
+    ?LOG_WARNING("Engine ~s unexpected event in starting: ~p/~p",
+                 [EngineId, EventType, Event], #{engine_id => EngineId}),
     keep_state_and_data.
 
 -spec ready(gen_statem:event_type(), term(), #data{}) ->
@@ -336,7 +362,7 @@ ready(enter, _OldState, _Data) ->
 %% --- generate request acceptance ---
 ready({call, From}, {generate, Prompt, Params},
       #data{reqs_table = ReqsTable, max_concurrent = MaxConcurrent,
-            port_pid = PortPid, port_ref = PortRef}) ->
+            port_pid = PortPid, port_ref = PortRef, engine_id = EngineId}) ->
     case ets:info(ReqsTable, size) < MaxConcurrent of
         false ->
             {keep_state_and_data, [{reply, From, {error, overloaded}}]};
@@ -344,10 +370,20 @@ ready({call, From}, {generate, Prompt, Params},
             RequestId = generate_request_id(),
             {CallerPid, _Tag} = From,
             MonRef = erlang:monitor(process, CallerPid),
-            ets:insert(ReqsTable, {RequestId, CallerPid, MonRef, PortRef}),
-            %% Send generate command to the port
-            ok = loom_port:send(PortPid, {generate, RequestId, Prompt, Params}),
-            {keep_state_and_data, [{reply, From, {ok, RequestId}}]}
+            %% Send generate command to the port BEFORE inserting into ETS.
+            %% If the send fails, we clean up the monitor and avoid leaking
+            %% an ETS entry that would never be resolved.
+            case loom_port:send(PortPid, {generate, RequestId, Prompt, Params}) of
+                ok ->
+                    ets:insert(ReqsTable, {RequestId, CallerPid, MonRef, PortRef}),
+                    {keep_state_and_data, [{reply, From, {ok, RequestId}}]};
+                {error, SendErr} ->
+                    erlang:demonitor(MonRef, [flush]),
+                    ?LOG_WARNING("Engine ~s generate send failed: ~p",
+                                 [EngineId, SendErr],
+                                 #{engine_id => EngineId}),
+                    {keep_state_and_data, [{reply, From, {error, not_ready}}]}
+            end
     end;
 
 %% --- Token routing (matching current PortRef) ---
@@ -404,7 +440,10 @@ ready(info, {loom_port_msg, _StaleRef, _Msg}, _Data) ->
     keep_state_and_data;
 
 %% --- Port error (decode errors etc, matching current PortRef) ---
-ready(info, {loom_port_error, PortRef, _Error}, #data{port_ref = PortRef} = _Data) ->
+ready(info, {loom_port_error, PortRef, Error},
+      #data{port_ref = PortRef, engine_id = EngineId} = _Data) ->
+    ?LOG_WARNING("Engine ~s port error in ready state: ~p",
+                 [EngineId, Error], #{engine_id => EngineId}),
     keep_state_and_data;
 
 %% --- Stale port error (mismatched ref — silently drop) ---
@@ -447,12 +486,24 @@ ready(info, {loom_port_timeout, _Ref}, #data{reqs_table = ReqsTable} = Data) ->
 
 %% --- Caller death (DOWN monitor) ---
 ready(info, {'DOWN', MonRef, process, CallerPid, _Reason},
-      #data{reqs_table = ReqsTable, port_pid = PortPid} = _Data) ->
+      #data{reqs_table = ReqsTable, port_pid = PortPid,
+            engine_id = EngineId} = _Data) ->
     %% Find the request for this caller via match_object
     case ets:match_object(ReqsTable, {'_', CallerPid, MonRef, '_'}) of
         [{RequestId, _CallerPid, _MonRef, _PortRef} | _] ->
             %% Cancel the in-flight request on the port
-            catch loom_port:send(PortPid, {cancel, RequestId}),
+            try loom_port:send(PortPid, {cancel, RequestId}) of
+                ok -> ok;
+                {error, SendErr} ->
+                    ?LOG_DEBUG("Engine ~s cancel send failed for ~s: ~p",
+                               [EngineId, RequestId, SendErr],
+                               #{engine_id => EngineId})
+            catch
+                _:_ ->
+                    ?LOG_DEBUG("Engine ~s cancel send crashed for ~s (port likely dead)",
+                               [EngineId, RequestId],
+                               #{engine_id => EngineId})
+            end,
             ets:delete(ReqsTable, RequestId);
         [] ->
             %% Already cleaned up
@@ -514,8 +565,14 @@ ready(cast, do_stop, #data{reqs_table = ReqsTable} = Data) ->
     stop_port(Data),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
-%% --- generate call in non-ready states routed here via gen_statem:call ---
-ready(_EventType, _Event, _Data) ->
+%% --- Catch-all: reply to unrecognized calls, log unexpected events ---
+ready({call, From}, Msg, #data{engine_id = EngineId}) ->
+    ?LOG_WARNING("Engine ~s unexpected call in ready: ~p",
+                 [EngineId, Msg], #{engine_id => EngineId}),
+    {keep_state_and_data, [{reply, From, {error, unknown_call}}]};
+ready(EventType, Event, #data{engine_id = EngineId}) ->
+    ?LOG_WARNING("Engine ~s unexpected event in ready: ~p/~p",
+                 [EngineId, EventType, Event], #{engine_id => EngineId}),
     keep_state_and_data.
 
 -spec draining(gen_statem:event_type(), term(), #data{}) ->
@@ -600,10 +657,22 @@ draining(info, {loom_port_timeout, _Ref}, #data{reqs_table = ReqsTable} = Data) 
 
 %% --- Caller death (DOWN): cancel request, cleanup, check if drain complete ---
 draining(info, {'DOWN', MonRef, process, CallerPid, _Reason},
-         #data{reqs_table = ReqsTable, port_pid = PortPid} = Data) ->
+         #data{reqs_table = ReqsTable, port_pid = PortPid,
+               engine_id = EngineId} = Data) ->
     case ets:match_object(ReqsTable, {'_', CallerPid, MonRef, '_'}) of
         [{RequestId, _CallerPid, _MonRef, _PortRef} | _] ->
-            catch loom_port:send(PortPid, {cancel, RequestId}),
+            try loom_port:send(PortPid, {cancel, RequestId}) of
+                ok -> ok;
+                {error, SendErr} ->
+                    ?LOG_DEBUG("Engine ~s cancel send failed for ~s: ~p",
+                               [EngineId, RequestId, SendErr],
+                               #{engine_id => EngineId})
+            catch
+                _:_ ->
+                    ?LOG_DEBUG("Engine ~s cancel send crashed for ~s (port likely dead)",
+                               [EngineId, RequestId],
+                               #{engine_id => EngineId})
+            end,
             ets:delete(ReqsTable, RequestId);
         [] ->
             ok
@@ -638,15 +707,23 @@ draining(info, {'EXIT', PortPid, Reason},
 %% --- EXIT from other linked processes, loom_port_error, gpu_alert: keep state ---
 draining(info, {'EXIT', _Pid, _Reason}, _Data) ->
     keep_state_and_data;
-draining(info, {loom_port_error, _Ref, _Error}, _Data) ->
+draining(info, {loom_port_error, _Ref, Error}, #data{engine_id = EngineId}) ->
+    ?LOG_WARNING("Engine ~s port error during drain: ~p",
+                 [EngineId, Error], #{engine_id => EngineId}),
     keep_state_and_data;
 
 %% --- Stale port messages (mismatched PortRef) ---
 draining(info, {loom_port_msg, _StaleRef, _Msg}, _Data) ->
     keep_state_and_data;
 
-%% --- Catch-all ---
-draining(_EventType, _Event, _Data) ->
+%% --- Catch-all: reply to unrecognized calls, log unexpected events ---
+draining({call, From}, Msg, #data{engine_id = EngineId}) ->
+    ?LOG_WARNING("Engine ~s unexpected call in draining: ~p",
+                 [EngineId, Msg], #{engine_id => EngineId}),
+    {keep_state_and_data, [{reply, From, {error, unknown_call}}]};
+draining(EventType, Event, #data{engine_id = EngineId}) ->
+    ?LOG_WARNING("Engine ~s unexpected event in draining: ~p/~p",
+                 [EngineId, EventType, Event], #{engine_id => EngineId}),
     keep_state_and_data.
 
 -spec stopped(gen_statem:event_type(), term(), #data{}) ->
@@ -662,7 +739,9 @@ stopped(_EventType, _Event, _Data) ->
     keep_state_and_data.
 
 -spec terminate(term(), atom(), #data{}) -> any().
-terminate(_Reason, _State, Data) ->
+terminate(Reason, State, #data{engine_id = EngineId} = Data) ->
+    ?LOG_DEBUG("Engine ~s terminating in state ~p, reason: ~p",
+               [EngineId, State, Reason], #{engine_id => EngineId}),
     %% Stop port if alive
     stop_port(Data),
     %% Delete both ETS tables with catch to avoid crashes if already deleted
@@ -710,9 +789,14 @@ stop_port(#data{port_pid = PortPid}) ->
     end.
 
 %% @doc Update the status field in the meta ETS table.
--spec update_meta_status(atom(), #data{}) -> true.
-update_meta_status(Status, #data{meta_table = MetaTable}) ->
-    ets:update_element(MetaTable, meta, {2, Status}).
+-spec update_meta_status(atom(), #data{}) -> ok.
+update_meta_status(Status, #data{meta_table = MetaTable, engine_id = EngineId}) ->
+    case ets:update_element(MetaTable, meta, {2, Status}) of
+        true -> ok;
+        false ->
+            ?LOG_WARNING("Engine ~s meta row missing, cannot update status to ~p",
+                         [EngineId, Status], #{engine_id => EngineId})
+    end.
 
 %% @doc Normalize port exit codes. Raw exit_status from Erlang ports can
 %% be OS-dependent; this helper ensures consistent representation.
