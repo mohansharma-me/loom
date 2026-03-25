@@ -20,7 +20,8 @@
 
 %% Test cases
 -export([
-    startup_to_ready_test/1
+    startup_to_ready_test/1,
+    happy_path_generate_test/1
 ]).
 
 %%====================================================================
@@ -29,7 +30,8 @@
 
 all() ->
     [
-        startup_to_ready_test
+        startup_to_ready_test,
+        happy_path_generate_test
     ].
 
 init_per_suite(Config) ->
@@ -72,6 +74,36 @@ startup_to_ready_test(_Config) ->
     ?assertEqual(<<"mock">>, maps:get(model, Info)),
     ?assertEqual(<<"mock">>, maps:get(backend, Info)),
     ?assertEqual(ready, maps:get(status, Info)),
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000).
+
+%% @doc Tests the full generate request lifecycle: generate call returns
+%% a request ID, tokens are routed to the caller, done message arrives
+%% with correct stats, and load returns to zero after completion.
+happy_path_generate_test(_Config) ->
+    Config = default_config(),
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+
+    {ok, RequestId} = loom_engine_coordinator:generate(
+        Pid, <<"Hello">>, #{max_tokens => 100}),
+    ?assert(is_binary(RequestId)),
+
+    %% Mock adapter sends 5 tokens + 1 done
+    Tokens = collect_tokens(RequestId, 5, 5000),
+    ?assertEqual(5, length(Tokens)),
+
+    receive
+        {loom_done, RequestId, Stats} ->
+            ?assertEqual(5, maps:get(tokens, Stats)),
+            ok
+    after 5000 ->
+        ct:fail("no loom_done received")
+    end,
+
+    ?assertEqual(0, loom_engine_coordinator:get_load(EngineId)),
+
     loom_engine_coordinator:stop(Pid),
     wait_dead(Pid, 5000).
 
@@ -129,6 +161,16 @@ wait_dead_loop(Pid, Deadline) ->
                     timer:sleep(min(50, Remaining)),
                     wait_dead_loop(Pid, Deadline)
             end
+    end.
+
+%% @doc Collect N token messages for a given RequestId, with timeout.
+collect_tokens(_RequestId, 0, _Timeout) -> [];
+collect_tokens(RequestId, N, Timeout) ->
+    receive
+        {loom_token, RequestId, Text, _Finished} ->
+            [Text | collect_tokens(RequestId, N - 1, Timeout)]
+    after Timeout ->
+        ct:fail(io_lib:format("collect_tokens: timeout waiting for token ~w", [N]))
     end.
 
 %% @doc Drain all messages from the current process mailbox.

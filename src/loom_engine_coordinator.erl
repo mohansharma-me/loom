@@ -162,8 +162,8 @@ start_link(Config) ->
 
 -spec generate(pid(), binary(), map()) ->
     {ok, binary()} | {error, not_ready | draining | overloaded | stopped}.
-generate(_Pid, _Prompt, _Params) ->
-    {error, not_ready}.
+generate(Pid, Prompt, Params) ->
+    gen_statem:call(Pid, {generate, Prompt, Params}).
 
 -spec shutdown(pid()) -> ok.
 shutdown(Pid) ->
@@ -248,18 +248,28 @@ init(Config) ->
 
 -spec starting(gen_statem:event_type(), term(), #data{}) ->
     gen_statem:state_enter_result(atom()) | gen_statem:event_handler_result(atom()).
-starting(enter, _OldState, #data{config = Config} = Data) ->
-    %% Start loom_port with built options; set startup timeout.
-    PortOpts = build_port_opts(Config),
-    case loom_port:start_link(PortOpts) of
-        {ok, PortPid} ->
+starting(enter, _OldState, #data{config = Config, port_pid = ExistingPortPid} = Data) ->
+    %% If port_pid is already set (self-heal path), skip port startup.
+    %% ASSUMPTION: When self-heal sets port_pid before transitioning to starting,
+    %% the port is already started and we only need to set the startup timeout.
+    case ExistingPortPid =/= undefined andalso is_process_alive(ExistingPortPid) of
+        true ->
             StartupTimeout = maps:get(startup_timeout_ms, Config),
-            {keep_state, Data#data{port_pid = PortPid},
+            {keep_state, Data,
              [{state_timeout, StartupTimeout, startup_timeout}]};
-        {error, Reason} ->
-            ?LOG_ERROR("loom_engine_coordinator ~s: failed to start port: ~p",
-                       [Data#data.engine_id, Reason]),
-            {next_state, stopped, Data}
+        false ->
+            %% Normal path: start loom_port with built options; set startup timeout.
+            PortOpts = build_port_opts(Config),
+            case loom_port:start_link(PortOpts) of
+                {ok, PortPid} ->
+                    StartupTimeout = maps:get(startup_timeout_ms, Config),
+                    {keep_state, Data#data{port_pid = PortPid},
+                     [{state_timeout, StartupTimeout, startup_timeout}]};
+                {error, Reason} ->
+                    ?LOG_ERROR("loom_engine_coordinator ~s: failed to start port: ~p",
+                               [Data#data.engine_id, Reason]),
+                    {next_state, stopped, Data}
+            end
     end;
 starting(info, {loom_port_ready, PortRef, Model, Backend}, Data) ->
     %% IMPORTANT: Capture the PortRef from loom_port (don't create a new one).
@@ -287,9 +297,9 @@ starting(state_timeout, startup_timeout, Data) ->
                  [Data#data.engine_id]),
     stop_port(Data),
     {next_state, stopped, Data#data{port_pid = undefined}};
-starting(info, {generate, _From, _Prompt, _Params}, _Data) ->
-    %% Not ready yet — caller will get {error, not_ready} via generate/3 stub
-    keep_state_and_data;
+starting({call, From}, {generate, _Prompt, _Params}, _Data) ->
+    %% Not ready yet — reply with error
+    {keep_state_and_data, [{reply, From, {error, not_ready}}]};
 starting(info, {'EXIT', _Pid, _Reason}, _Data) ->
     %% Keep state — trap_exit handles linked exits.
     %% loom_port_exit notification handles the actual state transition.
@@ -310,29 +320,162 @@ starting(_EventType, _Event, _Data) ->
     gen_statem:state_enter_result(atom()) | gen_statem:event_handler_result(atom()).
 ready(enter, _OldState, _Data) ->
     keep_state_and_data;
-ready(cast, do_shutdown, Data) ->
-    stop_port(Data),
-    {next_state, stopped, Data#data{port_pid = undefined}};
-ready(cast, do_stop, Data) ->
-    stop_port(Data),
-    {next_state, stopped, Data#data{port_pid = undefined}};
-ready(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
+
+%% --- generate request acceptance ---
+ready({call, From}, {generate, Prompt, Params},
+      #data{reqs_table = ReqsTable, max_concurrent = MaxConcurrent,
+            port_pid = PortPid, port_ref = PortRef}) ->
+    case ets:info(ReqsTable, size) < MaxConcurrent of
+        false ->
+            {keep_state_and_data, [{reply, From, {error, overloaded}}]};
+        true ->
+            RequestId = iolist_to_binary([<<"req-">>,
+                integer_to_binary(erlang:unique_integer([positive, monotonic]))]),
+            {CallerPid, _Tag} = From,
+            MonRef = erlang:monitor(process, CallerPid),
+            ets:insert(ReqsTable, {RequestId, CallerPid, MonRef, PortRef}),
+            %% Send generate command to the port
+            loom_port:send(PortPid, {generate, RequestId, Prompt, Params}),
+            {keep_state_and_data, [{reply, From, {ok, RequestId}}]}
+    end;
+
+%% --- Token routing (matching current PortRef) ---
+ready(info, {loom_port_msg, PortRef, {token, Id, _TokenId, Text, Finished}},
+      #data{port_ref = PortRef, reqs_table = ReqsTable} = _Data) ->
+    case ets:lookup(ReqsTable, Id) of
+        [{Id, CallerPid, _MonRef, _}] ->
+            CallerPid ! {loom_token, Id, Text, Finished},
+            keep_state_and_data;
+        [] ->
+            %% Unknown request ID — request may have been cancelled
+            keep_state_and_data
+    end;
+
+%% --- Done handling (matching current PortRef) ---
+ready(info, {loom_port_msg, PortRef, {done, Id, TokensGenerated, TimeMs}},
+      #data{port_ref = PortRef, reqs_table = ReqsTable} = _Data) ->
+    case ets:lookup(ReqsTable, Id) of
+        [{Id, CallerPid, MonRef, _}] ->
+            CallerPid ! {loom_done, Id, #{tokens => TokensGenerated, time_ms => TimeMs}},
+            erlang:demonitor(MonRef, [flush]),
+            ets:delete(ReqsTable, Id);
+        [] ->
+            ok
+    end,
+    keep_state_and_data;
+
+%% --- Error from port for a specific request (matching current PortRef) ---
+ready(info, {loom_port_msg, PortRef, {error, Id, Code, Message}},
+      #data{port_ref = PortRef, reqs_table = ReqsTable} = _Data) when Id =/= undefined ->
+    case ets:lookup(ReqsTable, Id) of
+        [{Id, CallerPid, MonRef, _}] ->
+            CallerPid ! {loom_error, Id, Code, Message},
+            erlang:demonitor(MonRef, [flush]),
+            ets:delete(ReqsTable, Id);
+        [] ->
+            ok
+    end,
+    keep_state_and_data;
+
+%% --- GPU alert logging ---
+ready(info, {loom_port_msg, PortRef, {health_response, _Status, GpuUtil, MemUsed, MemTotal}},
+      #data{port_ref = PortRef, engine_id = EngineId} = _Data) ->
+    ?LOG_DEBUG("loom_engine_coordinator ~s: GPU health — util=~.1f%, mem=~.1f/~.1f GB",
+               [EngineId, GpuUtil * 100, MemUsed, MemTotal]),
+    keep_state_and_data;
+
+%% --- Other port messages with matching PortRef (log and ignore) ---
+ready(info, {loom_port_msg, PortRef, _Msg}, #data{port_ref = PortRef} = _Data) ->
+    keep_state_and_data;
+
+%% --- Stale port messages (mismatched PortRef — silently drop) ---
+ready(info, {loom_port_msg, _StaleRef, _Msg}, _Data) ->
+    keep_state_and_data;
+
+%% --- Port error (decode errors etc, matching current PortRef) ---
+ready(info, {loom_port_error, PortRef, _Error}, #data{port_ref = PortRef} = _Data) ->
+    keep_state_and_data;
+
+%% --- Stale port error (mismatched ref — silently drop) ---
+ready(info, {loom_port_error, _StaleRef, _Error}, _Data) ->
+    keep_state_and_data;
+
+%% --- Self-heal on port crash ---
+ready(info, {loom_port_exit, _Ref, ExitCode},
+      #data{reqs_table = ReqsTable, config = Config, engine_id = EngineId} = Data) ->
     NormalizedCode = normalize_exit_code(ExitCode),
-    ?LOG_WARNING("loom_engine_coordinator ~s: port exited in ready state "
-                 "with code ~p", [Data#data.engine_id, NormalizedCode]),
-    {next_state, stopped, Data#data{port_pid = undefined}};
-ready(info, {'EXIT', _Pid, _Reason}, _Data) ->
-    keep_state_and_data;
-ready(info, {loom_port_msg, _Ref, _Msg}, _Data) ->
-    %% TODO: Route messages to callers in Task 4
-    keep_state_and_data;
-ready(info, {loom_port_error, _Ref, _Error}, _Data) ->
-    keep_state_and_data;
-ready(info, {loom_port_timeout, _Ref}, Data) ->
+    NormalizedBin = normalize_exit_code_binary(NormalizedCode),
+    ?LOG_WARNING("loom_engine_coordinator ~s: port crashed with code ~p, "
+                 "self-healing", [EngineId, NormalizedCode]),
+    %% Notify all in-flight callers of the crash
+    notify_all_callers_error(ReqsTable, <<"engine_crashed">>, NormalizedBin),
+    %% Clear all in-flight requests
+    ets:delete_all_objects(ReqsTable),
+    %% Start a new port for self-heal
+    PortOpts = build_port_opts(Config),
+    case loom_port:start_link(PortOpts) of
+        {ok, NewPortPid} ->
+            update_meta_status(starting, Data),
+            {next_state, starting,
+             Data#data{port_pid = NewPortPid, port_ref = undefined}};
+        {error, Reason} ->
+            ?LOG_ERROR("loom_engine_coordinator ~s: self-heal port start failed: ~p",
+                       [EngineId, Reason]),
+            {next_state, stopped, Data#data{port_pid = undefined, port_ref = undefined}}
+    end;
+
+%% --- Port heartbeat timeout ---
+ready(info, {loom_port_timeout, _Ref}, #data{reqs_table = ReqsTable} = Data) ->
     ?LOG_WARNING("loom_engine_coordinator ~s: port heartbeat timeout in ready state",
                  [Data#data.engine_id]),
+    %% Notify all in-flight callers
+    notify_all_callers_error(ReqsTable, <<"engine_timeout">>, <<"heartbeat_timeout">>),
+    ets:delete_all_objects(ReqsTable),
     stop_port(Data),
     {next_state, stopped, Data#data{port_pid = undefined}};
+
+%% --- Caller death (DOWN monitor) ---
+ready(info, {'DOWN', MonRef, process, CallerPid, _Reason},
+      #data{reqs_table = ReqsTable, port_pid = PortPid} = _Data) ->
+    %% Find the request for this caller via match_object
+    case ets:match_object(ReqsTable, {'_', CallerPid, MonRef, '_'}) of
+        [{RequestId, _CallerPid, _MonRef, _PortRef} | _] ->
+            %% Cancel the in-flight request on the port
+            catch loom_port:send(PortPid, {cancel, RequestId}),
+            ets:delete(ReqsTable, RequestId);
+        [] ->
+            %% Already cleaned up
+            ok
+    end,
+    keep_state_and_data;
+
+%% --- EXIT from port process (handled by loom_port_exit notification) ---
+ready(info, {'EXIT', PortPid, _Reason}, #data{port_pid = PortPid} = _Data) ->
+    keep_state_and_data;
+
+%% --- EXIT from other linked processes ---
+ready(info, {'EXIT', _Pid, _Reason}, _Data) ->
+    keep_state_and_data;
+
+%% --- Graceful shutdown ---
+ready(cast, do_shutdown, #data{reqs_table = ReqsTable} = Data) ->
+    case ets:info(ReqsTable, size) of
+        0 ->
+            stop_port(Data),
+            {next_state, stopped, Data#data{port_pid = undefined}};
+        _N ->
+            {next_state, draining, Data}
+    end;
+
+%% --- Immediate stop ---
+ready(cast, do_stop, #data{reqs_table = ReqsTable} = Data) ->
+    %% Notify all in-flight callers
+    notify_all_callers_error(ReqsTable, <<"engine_stopped">>, <<"stopped">>),
+    ets:delete_all_objects(ReqsTable),
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+
+%% --- generate call in non-ready states routed here via gen_statem:call ---
 ready(_EventType, _Event, _Data) ->
     keep_state_and_data.
 
@@ -341,6 +484,8 @@ ready(_EventType, _Event, _Data) ->
 draining(enter, _OldState, _Data) ->
     %% TODO: Implement drain protocol in Task 5
     keep_state_and_data;
+draining({call, From}, {generate, _Prompt, _Params}, _Data) ->
+    {keep_state_and_data, [{reply, From, {error, draining}}]};
 draining(cast, do_stop, Data) ->
     stop_port(Data),
     {next_state, stopped, Data#data{port_pid = undefined}};
@@ -409,3 +554,20 @@ update_meta_status(Status, #data{meta_table = MetaTable}) ->
 normalize_exit_code(killed) -> killed;
 normalize_exit_code(Code) when is_integer(Code), Code >= 0 -> Code;
 normalize_exit_code(_Other) -> 1.
+
+%% @doc Convert a normalized exit code to binary for error messages.
+-spec normalize_exit_code_binary(non_neg_integer() | killed) -> binary().
+normalize_exit_code_binary(killed) -> <<"killed">>;
+normalize_exit_code_binary(Code) when is_integer(Code) ->
+    integer_to_binary(Code).
+
+%% @doc Notify all in-flight callers with an error message and demonitor them.
+%% Iterates the requests ETS table and sends {loom_error, RequestId, Code, Detail}
+%% to each caller. Does NOT delete ETS entries — caller must do that after.
+-spec notify_all_callers_error(ets:table(), binary(), binary()) -> ok.
+notify_all_callers_error(ReqsTable, Code, Detail) ->
+    ets:foldl(fun({RequestId, CallerPid, MonRef, _PortRef}, Acc) ->
+        CallerPid ! {loom_error, RequestId, Code, Detail},
+        erlang:demonitor(MonRef, [flush]),
+        Acc
+    end, ok, ReqsTable).
