@@ -28,6 +28,7 @@
     not_ready_rejection_test/1,
     max_concurrent_test/1,
     port_crash_inflight_test/1,
+    port_crash_multi_inflight_test/1,
     self_heal_then_succeed_test/1,
     port_crash_during_drain_test/1,
     caller_death_test/1,
@@ -48,6 +49,7 @@ all() ->
         not_ready_rejection_test,
         max_concurrent_test,
         port_crash_inflight_test,
+        port_crash_multi_inflight_test,
         self_heal_then_succeed_test,
         port_crash_during_drain_test,
         caller_death_test,
@@ -199,7 +201,8 @@ not_ready_rejection_test(_Config) ->
 max_concurrent_test(_Config) ->
     Config = (default_config())#{
         engine_id => <<"test_engine_overload">>,
-        max_concurrent => 2
+        max_concurrent => 2,
+        args => [mock_adapter_path(), "--token-delay", "1"]
     },
     {ok, Pid} = loom_engine_coordinator:start_link(Config),
     EngineId = maps:get(engine_id, Config),
@@ -227,8 +230,8 @@ max_concurrent_test(_Config) ->
     ?assertMatch({ok, _}, Res2),
 
     %% Third request should be rejected — both slots are occupied
-    Res3 = loom_engine_coordinator:generate(Pid, <<"Prompt3">>, #{}),
-    ?assertMatch({error, overloaded}, Res3),
+    Result3 = loom_engine_coordinator:generate(Pid, <<"Prompt3">>, #{}),
+    ?assertEqual({error, overloaded}, Result3),
 
     %% Clean up spawned callers
     exit(Caller1, kill),
@@ -277,6 +280,65 @@ port_crash_inflight_test(_Config) ->
     %% Verify self-heal: coordinator returns to ready state
     wait_status(EngineId, ready, 10000),
     ?assertEqual(ready, loom_engine_coordinator:get_status(EngineId)),
+
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000).
+
+%% @doc Tests that killing the port while multiple requests are in-flight
+%% delivers engine_crashed error to ALL callers, and the coordinator
+%% self-heals back to ready state.
+%% Uses --token-delay 2 so requests stay in-flight long enough.
+port_crash_multi_inflight_test(_Config) ->
+    Config = (default_config())#{
+        args => [mock_adapter_path(), "--token-delay", "2"]
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+
+    Self = self(),
+    %% Spawn 3 callers that each start a generate request
+    CallerFun = fun(N) ->
+        spawn_link(fun() ->
+            {ok, ReqId} = loom_engine_coordinator:generate(Pid, <<"Hello">>, #{}),
+            Self ! {caller_ready, N, ReqId},
+            receive
+                {loom_error, ReqId, Code, _Detail} ->
+                    Self ! {caller_error, N, ReqId, Code};
+                {loom_done, ReqId, _Stats} ->
+                    Self ! {caller_done, N, ReqId}
+            after 15000 ->
+                Self ! {caller_timeout, N, ReqId}
+            end
+        end)
+    end,
+    _Callers = [CallerFun(N) || N <- [1, 2, 3]],
+
+    %% Wait for all 3 to confirm they have in-flight requests
+    _ReqIds = [receive {caller_ready, N, RId} -> RId after 5000 -> ct:fail("caller ~w never ready", [N]) end || N <- [1, 2, 3]],
+
+    %% Verify all 3 are in-flight
+    ?assertEqual(3, loom_engine_coordinator:get_load(EngineId)),
+
+    %% Kill the port
+    PortPid = find_port_pid(Pid),
+    exit(PortPid, kill),
+
+    %% All 3 callers should receive engine_crashed
+    lists:foreach(fun(N) ->
+        receive
+            {caller_error, N, _, <<"engine_crashed">>} -> ok;
+            {caller_error, N, _, OtherCode} -> ct:fail("caller ~w got ~p instead of engine_crashed", [N, OtherCode]);
+            {caller_done, N, _} -> ct:fail("caller ~w got done instead of error", [N]);
+            {caller_timeout, N, _} -> ct:fail("caller ~w timed out", [N])
+        after 10000 ->
+            ct:fail("no response from caller ~w", [N])
+        end
+    end, [1, 2, 3]),
+
+    %% Coordinator should self-heal
+    wait_status(EngineId, ready, 15000),
+    ?assertEqual(0, loom_engine_coordinator:get_load(EngineId)),
 
     loom_engine_coordinator:stop(Pid),
     wait_dead(Pid, 5000).
@@ -363,8 +425,11 @@ port_crash_during_drain_test(_Config) ->
 %% @doc Tests that when a caller dies after issuing a generate request,
 %% the coordinator detects the DOWN and cleans up the in-flight request
 %% (load returns to 0, ETS entry removed).
+%% Uses --token-delay 1 so request is still in-flight when the caller dies.
 caller_death_test(_Config) ->
-    Config = default_config(),
+    Config = (default_config())#{
+        args => [mock_adapter_path(), "--token-delay", "1"]
+    },
     {ok, Pid} = loom_engine_coordinator:start_link(Config),
     EngineId = maps:get(engine_id, Config),
     wait_status(EngineId, ready, 5000),
@@ -418,7 +483,7 @@ drain_timeout_test(_Config) ->
     receive
         {got_error, _ReqId2, <<"drain_timeout">>} -> ok;
         {got_error, _ReqId2, OtherCode} ->
-            ct:pal("got error code: ~p (acceptable)", [OtherCode]);
+            ct:fail("expected drain_timeout error code, got: ~p", [OtherCode]);
         {timeout_never_fired, _} ->
             ct:fail("drain timeout never fired")
     after 10000 ->
