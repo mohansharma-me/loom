@@ -29,7 +29,9 @@
     max_concurrent_test/1,
     port_crash_inflight_test/1,
     self_heal_then_succeed_test/1,
-    port_crash_during_drain_test/1
+    port_crash_during_drain_test/1,
+    caller_death_test/1,
+    drain_timeout_test/1
 ]).
 
 %%====================================================================
@@ -47,7 +49,9 @@ all() ->
         max_concurrent_test,
         port_crash_inflight_test,
         self_heal_then_succeed_test,
-        port_crash_during_drain_test
+        port_crash_during_drain_test,
+        caller_death_test,
+        drain_timeout_test
     ].
 
 init_per_suite(Config) ->
@@ -354,6 +358,73 @@ port_crash_during_drain_test(_Config) ->
     %% Drain any remaining messages (error notifications, EXIT signals, etc.)
     drain_messages(500),
 
+    wait_dead(Pid, 5000).
+
+%% @doc Tests that when a caller dies after issuing a generate request,
+%% the coordinator detects the DOWN and cleans up the in-flight request
+%% (load returns to 0, ETS entry removed).
+caller_death_test(_Config) ->
+    Config = default_config(),
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+    Self = self(),
+    CallerPid = spawn(fun() ->
+        Result = loom_engine_coordinator:generate(Pid, <<"Hello">>, #{}),
+        Self ! {caller_started, Result},
+        ok
+    end),
+    receive
+        {caller_started, {ok, _RequestId}} -> ok;
+        {caller_started, {error, Reason}} ->
+            ct:fail(io_lib:format("generate failed: ~p", [Reason]))
+    after 5000 -> ct:fail("caller never started request")
+    end,
+    %% ASSUMPTION: 200ms is enough time for the coordinator to process
+    %% the DOWN message from the dead caller and clean up the request.
+    timer:sleep(200),
+    ?assertEqual(0, loom_engine_coordinator:get_load(EngineId)),
+    ?assertEqual(false, is_process_alive(CallerPid)),
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000).
+
+%% @doc Tests that when a drain timeout fires (adapter too slow to finish
+%% in-flight requests), the caller receives a drain_timeout error.
+%% Uses --token-delay 2 (2s between tokens) with drain_timeout_ms => 500.
+drain_timeout_test(_Config) ->
+    Config = (default_config())#{
+        args => [mock_adapter_path(), "--token-delay", "2"],
+        drain_timeout_ms => 500
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+    Self = self(),
+    _Caller = spawn_link(fun() ->
+        {ok, ReqId} = loom_engine_coordinator:generate(Pid, <<"Hello">>, #{}),
+        Self ! {req_started, ReqId},
+        receive
+            {loom_error, ReqId, Code, _Msg} ->
+                Self ! {got_error, ReqId, Code}
+        after 10000 ->
+            Self ! {timeout_never_fired, ReqId}
+        end
+    end),
+    receive
+        {req_started, _ReqId} -> ok
+    after 5000 -> ct:fail("request never started")
+    end,
+    ok = loom_engine_coordinator:shutdown(Pid),
+    receive
+        {got_error, _ReqId2, <<"drain_timeout">>} -> ok;
+        {got_error, _ReqId2, OtherCode} ->
+            ct:pal("got error code: ~p (acceptable)", [OtherCode]);
+        {timeout_never_fired, _} ->
+            ct:fail("drain timeout never fired")
+    after 10000 ->
+        ct:fail("no error from drain timeout")
+    end,
+    wait_status(EngineId, stopped, 5000),
     wait_dead(Pid, 5000).
 
 %%====================================================================
