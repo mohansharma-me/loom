@@ -346,7 +346,7 @@ ready({call, From}, {generate, Prompt, Params},
             MonRef = erlang:monitor(process, CallerPid),
             ets:insert(ReqsTable, {RequestId, CallerPid, MonRef, PortRef}),
             %% Send generate command to the port
-            loom_port:send(PortPid, {generate, RequestId, Prompt, Params}),
+            ok = loom_port:send(PortPid, {generate, RequestId, Prompt, Params}),
             {keep_state_and_data, [{reply, From, {ok, RequestId}}]}
     end;
 
