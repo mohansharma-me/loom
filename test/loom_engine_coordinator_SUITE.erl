@@ -26,7 +26,10 @@
     drain_empty_test/1,
     startup_timeout_test/1,
     not_ready_rejection_test/1,
-    max_concurrent_test/1
+    max_concurrent_test/1,
+    port_crash_inflight_test/1,
+    self_heal_then_succeed_test/1,
+    port_crash_during_drain_test/1
 ]).
 
 %%====================================================================
@@ -41,7 +44,10 @@ all() ->
         drain_empty_test,
         startup_timeout_test,
         not_ready_rejection_test,
-        max_concurrent_test
+        max_concurrent_test,
+        port_crash_inflight_test,
+        self_heal_then_succeed_test,
+        port_crash_during_drain_test
     ].
 
 init_per_suite(Config) ->
@@ -227,6 +233,129 @@ max_concurrent_test(_Config) ->
     loom_engine_coordinator:stop(Pid),
     wait_dead(Pid, 5000).
 
+%% @doc Tests that killing the port while a request is in-flight delivers
+%% an engine_crashed error to the caller, and the coordinator self-heals
+%% back to ready state.
+%% Uses --token-delay 1 so the request stays in-flight long enough to kill.
+port_crash_inflight_test(_Config) ->
+    Config = (default_config())#{
+        engine_id => <<"test_engine_crash_inflight">>,
+        args => [mock_adapter_path(), "--token-delay", "1"]
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+
+    %% Start a slow generate request (tokens arrive every 1s)
+    {ok, RequestId} = loom_engine_coordinator:generate(Pid, <<"Hello">>, #{}),
+
+    %% Wait for load to become > 0 (request is in-flight)
+    wait_load_nonzero(EngineId, 2000),
+    ?assert(loom_engine_coordinator:get_load(EngineId) > 0),
+
+    %% Find the port pid from the coordinator's links
+    %% ASSUMPTION: The coordinator links to the loom_port process. We filter
+    %% out the test process (self()) to find the port pid.
+    PortPid = find_port_pid(Pid),
+    ?assert(is_pid(PortPid)),
+
+    %% Kill the port process — coordinator traps exits, so it will self-heal
+    exit(PortPid, kill),
+
+    %% Verify caller receives engine_crashed error
+    receive
+        {loom_error, RequestId, <<"engine_crashed">>, _Detail} ->
+            ok
+    after 5000 ->
+        ct:fail("no loom_error engine_crashed received")
+    end,
+
+    %% Verify self-heal: coordinator returns to ready state
+    wait_status(EngineId, ready, 10000),
+    ?assertEqual(ready, loom_engine_coordinator:get_status(EngineId)),
+
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000).
+
+%% @doc Tests that after a port crash and self-heal, the coordinator can
+%% successfully handle a new generate request end-to-end.
+%% Uses default fast adapter (no token delay).
+self_heal_then_succeed_test(_Config) ->
+    Config = (default_config())#{
+        engine_id => <<"test_engine_self_heal">>
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+
+    %% Find and kill the port pid to trigger self-heal
+    OldPortPid = find_port_pid(Pid),
+    exit(OldPortPid, kill),
+
+    %% Wait for self-heal to complete: the coordinator will go through
+    %% starting -> ready with a new port. With a fast adapter, this can
+    %% happen before our poll catches the intermediate state, so we wait
+    %% for the port pid to change (proving self-heal happened) AND for
+    %% ready status.
+    wait_port_pid_changed(Pid, OldPortPid, 10000),
+    wait_status(EngineId, ready, 10000),
+
+    %% Now send a new generate request — it should succeed end-to-end
+    {ok, RequestId} = loom_engine_coordinator:generate(Pid, <<"Hello">>, #{}),
+    ?assert(is_binary(RequestId)),
+
+    %% Collect 5 tokens from mock adapter
+    Tokens = collect_tokens(RequestId, 5, 5000),
+    ?assertEqual(5, length(Tokens)),
+
+    %% Collect the done message
+    receive
+        {loom_done, RequestId, Stats} ->
+            ?assertEqual(5, maps:get(tokens, Stats)),
+            ok
+    after 5000 ->
+        ct:fail("no loom_done received after self-heal")
+    end,
+
+    ?assertEqual(0, loom_engine_coordinator:get_load(EngineId)),
+
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000).
+
+%% @doc Tests that killing the port during drain transitions the coordinator
+%% to stopped (NOT starting — no self-heal during drain).
+%% Uses --token-delay 1 so the request is in-flight long enough to drain+kill.
+port_crash_during_drain_test(_Config) ->
+    Config = (default_config())#{
+        engine_id => <<"test_engine_drain_crash">>,
+        args => [mock_adapter_path(), "--token-delay", "1"]
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(Config),
+    EngineId = maps:get(engine_id, Config),
+    wait_status(EngineId, ready, 5000),
+
+    %% Start a slow request so we have an in-flight during drain
+    {ok, _RequestId} = loom_engine_coordinator:generate(Pid, <<"Hello">>, #{}),
+
+    %% Wait for request to be in-flight
+    wait_load_nonzero(EngineId, 2000),
+
+    %% Initiate drain — coordinator moves to draining state
+    ok = loom_engine_coordinator:shutdown(Pid),
+    wait_status(EngineId, draining, 5000),
+
+    %% Find and kill the port while draining
+    PortPid = find_port_pid(Pid),
+    exit(PortPid, kill),
+
+    %% Verify coordinator goes to stopped (NOT starting — no self-heal during drain)
+    wait_status(EngineId, stopped, 10000),
+
+    %% Drain any remaining messages (error notifications, EXIT signals, etc.)
+    drain_messages(500),
+
+    wait_dead(Pid, 5000).
+
 %%====================================================================
 %% Helpers
 %%====================================================================
@@ -307,4 +436,54 @@ flush_mailbox() ->
 flush_and_wait() ->
     receive _ -> flush_and_wait()
     after 30000 -> ok
+    end.
+
+%% @doc Find the loom_port pid from a coordinator's linked processes.
+%% Filters out self() from the coordinator's links to find the port pid.
+%% ASSUMPTION: The coordinator has exactly one link besides the test process
+%% (self()), which is the loom_port process.
+find_port_pid(CoordinatorPid) ->
+    {links, Links} = process_info(CoordinatorPid, links),
+    Self = self(),
+    PortPids = [P || P <- Links, is_pid(P), P =/= Self],
+    case PortPids of
+        [PortPid | _] -> PortPid;
+        [] -> undefined
+    end.
+
+%% @doc Poll get_load/1 until it returns > 0 or timeout.
+wait_load_nonzero(EngineId, Timeout) when Timeout > 0 ->
+    case catch loom_engine_coordinator:get_load(EngineId) of
+        N when is_integer(N), N > 0 ->
+            ok;
+        _ ->
+            timer:sleep(50),
+            wait_load_nonzero(EngineId, Timeout - 50)
+    end;
+wait_load_nonzero(_EngineId, _Timeout) ->
+    ct:fail("wait_load_nonzero: load never became > 0").
+
+%% @doc Wait until the coordinator's port pid changes from OldPortPid.
+%% Proves that self-heal has started (new loom_port spawned).
+wait_port_pid_changed(CoordinatorPid, OldPortPid, Timeout) when Timeout > 0 ->
+    case is_process_alive(CoordinatorPid) of
+        false ->
+            ct:fail("wait_port_pid_changed: coordinator died");
+        true ->
+            CurrentPortPid = find_port_pid(CoordinatorPid),
+            case CurrentPortPid =/= OldPortPid andalso CurrentPortPid =/= undefined of
+                true -> ok;
+                false ->
+                    timer:sleep(50),
+                    wait_port_pid_changed(CoordinatorPid, OldPortPid, Timeout - 50)
+            end
+    end;
+wait_port_pid_changed(_CoordinatorPid, _OldPortPid, _Timeout) ->
+    ct:fail("wait_port_pid_changed: port pid never changed").
+
+%% @doc Drain all messages from the mailbox, waiting up to Timeout ms
+%% for each message. Returns ok when no more messages arrive within Timeout.
+drain_messages(Timeout) ->
+    receive _ -> drain_messages(Timeout)
+    after Timeout -> ok
     end.

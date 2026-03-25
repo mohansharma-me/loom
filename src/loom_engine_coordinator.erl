@@ -304,9 +304,14 @@ starting(state_timeout, startup_timeout, Data) ->
 starting({call, From}, {generate, _Prompt, _Params}, _Data) ->
     %% Not ready yet — reply with error
     {keep_state_and_data, [{reply, From, {error, not_ready}}]};
+starting(info, {'EXIT', PortPid, _Reason}, #data{port_pid = PortPid} = Data) ->
+    %% Port process died during startup. loom_port_exit may not arrive
+    %% (e.g., if killed with exit(kill)). Transition to stopped.
+    ?LOG_WARNING("loom_engine_coordinator ~s: port process exited during startup",
+                 [Data#data.engine_id]),
+    {next_state, stopped, Data#data{port_pid = undefined}};
 starting(info, {'EXIT', _Pid, _Reason}, _Data) ->
-    %% Keep state — trap_exit handles linked exits.
-    %% loom_port_exit notification handles the actual state transition.
+    %% EXIT from other linked processes — ignore.
     keep_state_and_data;
 starting(cast, do_shutdown, Data) ->
     stop_port(Data),
@@ -453,9 +458,37 @@ ready(info, {'DOWN', MonRef, process, CallerPid, _Reason},
     end,
     keep_state_and_data;
 
-%% --- EXIT from port process (handled by loom_port_exit notification) ---
-ready(info, {'EXIT', PortPid, _Reason}, #data{port_pid = PortPid} = _Data) ->
-    keep_state_and_data;
+%% --- EXIT from port process ---
+%% When loom_port is killed (e.g., exit(Pid, kill)), it cannot send
+%% loom_port_exit because terminate/3 is not called for untrappable signals.
+%% We must self-heal directly from the EXIT signal.
+%% ASSUMPTION: If the port process exits, loom_port_exit may or may not follow.
+%% Handling EXIT here is safe even if loom_port_exit also arrives, because
+%% transitioning to starting clears port_pid, making the stale loom_port_exit
+%% a no-match on PortPid.
+ready(info, {'EXIT', PortPid, Reason},
+      #data{port_pid = PortPid, reqs_table = ReqsTable, config = Config,
+            engine_id = EngineId} = Data) ->
+    NormalizedCode = normalize_exit_code(Reason),
+    NormalizedBin = normalize_exit_code_binary(NormalizedCode),
+    ?LOG_WARNING("loom_engine_coordinator ~s: port process exited with reason ~p, "
+                 "self-healing", [EngineId, Reason]),
+    %% Notify all in-flight callers of the crash
+    notify_all_callers_error(ReqsTable, <<"engine_crashed">>, NormalizedBin),
+    %% Clear all in-flight requests
+    ets:delete_all_objects(ReqsTable),
+    %% Start a new port for self-heal
+    PortOpts = build_port_opts(Config),
+    case loom_port:start_link(PortOpts) of
+        {ok, NewPortPid} ->
+            update_meta_status(starting, Data),
+            {next_state, starting,
+             Data#data{port_pid = NewPortPid, port_ref = undefined}};
+        {error, StartReason} ->
+            ?LOG_ERROR("loom_engine_coordinator ~s: self-heal port start failed: ~p",
+                       [EngineId, StartReason]),
+            {next_state, stopped, Data#data{port_pid = undefined, port_ref = undefined}}
+    end;
 
 %% --- EXIT from other linked processes ---
 ready(info, {'EXIT', _Pid, _Reason}, _Data) ->
@@ -586,9 +619,19 @@ draining(cast, do_stop, #data{reqs_table = ReqsTable} = Data) ->
     stop_port(Data),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
-%% --- EXIT from port process (handled by loom_port_exit notification) ---
-draining(info, {'EXIT', PortPid, _Reason}, #data{port_pid = PortPid} = _Data) ->
-    keep_state_and_data;
+%% --- EXIT from port process ---
+%% When loom_port is killed directly, loom_port_exit may not arrive.
+%% Handle EXIT by transitioning to stopped (no self-heal during drain).
+draining(info, {'EXIT', PortPid, Reason},
+         #data{port_pid = PortPid, reqs_table = ReqsTable,
+               engine_id = EngineId} = Data) ->
+    NormalizedCode = normalize_exit_code(Reason),
+    NormalizedBin = normalize_exit_code_binary(NormalizedCode),
+    ?LOG_WARNING("loom_engine_coordinator ~s: port process exited during drain with reason ~p",
+                 [EngineId, Reason]),
+    notify_all_callers_error(ReqsTable, <<"engine_crashed">>, NormalizedBin),
+    ets:delete_all_objects(ReqsTable),
+    {next_state, stopped, Data#data{port_pid = undefined}};
 
 %% --- EXIT from other linked processes, loom_port_error, gpu_alert: keep state ---
 draining(info, {'EXIT', _Pid, _Reason}, _Data) ->
