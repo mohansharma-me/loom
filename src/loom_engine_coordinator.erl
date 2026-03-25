@@ -148,7 +148,7 @@ meta_table_name(EngineId) ->
     binary_to_atom(<<"loom_coord_meta_", EngineId/binary>>).
 
 %%====================================================================
-%% Public API (stubs for now)
+%% Public API
 %%====================================================================
 
 -spec start_link(map()) -> {ok, pid()} | {error, term()}.
@@ -166,12 +166,12 @@ generate(_Pid, _Prompt, _Params) ->
     {error, not_ready}.
 
 -spec shutdown(pid()) -> ok.
-shutdown(_Pid) ->
-    ok.
+shutdown(Pid) ->
+    gen_statem:cast(Pid, do_shutdown).
 
 -spec stop(pid()) -> ok.
-stop(_Pid) ->
-    ok.
+stop(Pid) ->
+    gen_statem:cast(Pid, do_stop).
 
 -spec get_status(binary()) -> starting | ready | draining | stopped.
 get_status(EngineId) ->
@@ -213,29 +213,199 @@ callback_mode() ->
     [state_functions, state_enter].
 
 -spec init(map()) -> gen_statem:init_result(atom()).
-init(_Config) ->
-    {stop, not_implemented}.
+init(Config) ->
+    %% MUST trap exits FIRST — loom_port:start_link creates a link and
+    %% we need to survive port crashes for self-heal.
+    process_flag(trap_exit, true),
+    EngineId = maps:get(engine_id, Config),
+    MaxConcurrent = maps:get(max_concurrent, Config),
+    %% Create named ETS tables for lock-free reads by router/metrics.
+    %% ASSUMPTION: Table names are unique per EngineId; if a coordinator
+    %% with the same EngineId is already running, this will crash.
+    ReqsTable = ets:new(reqs_table_name(EngineId), [
+        named_table, set, protected, {read_concurrency, true}
+    ]),
+    MetaTable = ets:new(meta_table_name(EngineId), [
+        named_table, set, protected, {read_concurrency, true}
+    ]),
+    StartedAt = erlang:system_time(millisecond),
+    %% Initialize meta row with status=starting
+    ets:insert(MetaTable, {meta, starting, EngineId,
+                           maps:get(model, Config),
+                           maps:get(backend, Config),
+                           undefined, StartedAt}),
+    Data = #data{
+        engine_id      = EngineId,
+        config         = Config,
+        port_pid       = undefined,
+        port_ref       = undefined,
+        reqs_table     = ReqsTable,
+        meta_table     = MetaTable,
+        max_concurrent = MaxConcurrent,
+        started_at     = StartedAt
+    },
+    {ok, starting, Data}.
 
 -spec starting(gen_statem:event_type(), term(), #data{}) ->
-    gen_statem:event_handler_result(atom()).
+    gen_statem:state_enter_result(atom()) | gen_statem:event_handler_result(atom()).
+starting(enter, _OldState, #data{config = Config} = Data) ->
+    %% Start loom_port with built options; set startup timeout.
+    PortOpts = build_port_opts(Config),
+    case loom_port:start_link(PortOpts) of
+        {ok, PortPid} ->
+            StartupTimeout = maps:get(startup_timeout_ms, Config),
+            {keep_state, Data#data{port_pid = PortPid},
+             [{state_timeout, StartupTimeout, startup_timeout}]};
+        {error, Reason} ->
+            ?LOG_ERROR("loom_engine_coordinator ~s: failed to start port: ~p",
+                       [Data#data.engine_id, Reason]),
+            {next_state, stopped, Data}
+    end;
+starting(info, {loom_port_ready, PortRef, Model, Backend}, Data) ->
+    %% IMPORTANT: Capture the PortRef from loom_port (don't create a new one).
+    %% This ref is used to filter stale messages after self-heal.
+    update_meta_status(ready, Data),
+    ets:update_element(Data#data.meta_table, meta, [
+        {4, Model}, {5, Backend}, {6, Data#data.port_pid}
+    ]),
+    {next_state, ready, Data#data{port_ref = PortRef}};
+starting(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
+    %% Port died before reaching ready → go to stopped
+    NormalizedCode = normalize_exit_code(ExitCode),
+    ?LOG_WARNING("loom_engine_coordinator ~s: port exited during startup "
+                 "with code ~p", [Data#data.engine_id, NormalizedCode]),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+starting(info, {loom_port_timeout, _Ref}, Data) ->
+    %% Heartbeat timeout from loom_port → shutdown port, go to stopped
+    ?LOG_WARNING("loom_engine_coordinator ~s: port heartbeat timeout during startup",
+                 [Data#data.engine_id]),
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+starting(state_timeout, startup_timeout, Data) ->
+    %% Startup timeout → shutdown port, go to stopped
+    ?LOG_WARNING("loom_engine_coordinator ~s: startup timeout expired",
+                 [Data#data.engine_id]),
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+starting(info, {generate, _From, _Prompt, _Params}, _Data) ->
+    %% Not ready yet — caller will get {error, not_ready} via generate/3 stub
+    keep_state_and_data;
+starting(info, {'EXIT', _Pid, _Reason}, _Data) ->
+    %% Keep state — trap_exit handles linked exits.
+    %% loom_port_exit notification handles the actual state transition.
+    keep_state_and_data;
+starting(cast, do_shutdown, Data) ->
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+starting(cast, do_stop, Data) ->
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+starting(info, {loom_port_error, _Ref, _Error}, _Data) ->
+    %% Log and ignore decode errors during startup
+    keep_state_and_data;
 starting(_EventType, _Event, _Data) ->
-    {stop, not_implemented}.
+    keep_state_and_data.
 
 -spec ready(gen_statem:event_type(), term(), #data{}) ->
-    gen_statem:event_handler_result(atom()).
+    gen_statem:state_enter_result(atom()) | gen_statem:event_handler_result(atom()).
+ready(enter, _OldState, _Data) ->
+    keep_state_and_data;
+ready(cast, do_shutdown, Data) ->
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+ready(cast, do_stop, Data) ->
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+ready(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
+    NormalizedCode = normalize_exit_code(ExitCode),
+    ?LOG_WARNING("loom_engine_coordinator ~s: port exited in ready state "
+                 "with code ~p", [Data#data.engine_id, NormalizedCode]),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+ready(info, {'EXIT', _Pid, _Reason}, _Data) ->
+    keep_state_and_data;
+ready(info, {loom_port_msg, _Ref, _Msg}, _Data) ->
+    %% TODO: Route messages to callers in Task 4
+    keep_state_and_data;
+ready(info, {loom_port_error, _Ref, _Error}, _Data) ->
+    keep_state_and_data;
+ready(info, {loom_port_timeout, _Ref}, Data) ->
+    ?LOG_WARNING("loom_engine_coordinator ~s: port heartbeat timeout in ready state",
+                 [Data#data.engine_id]),
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
 ready(_EventType, _Event, _Data) ->
-    {stop, not_implemented}.
+    keep_state_and_data.
 
 -spec draining(gen_statem:event_type(), term(), #data{}) ->
-    gen_statem:event_handler_result(atom()).
+    gen_statem:state_enter_result(atom()) | gen_statem:event_handler_result(atom()).
+draining(enter, _OldState, _Data) ->
+    %% TODO: Implement drain protocol in Task 5
+    keep_state_and_data;
+draining(cast, do_stop, Data) ->
+    stop_port(Data),
+    {next_state, stopped, Data#data{port_pid = undefined}};
+draining(info, {'EXIT', _Pid, _Reason}, _Data) ->
+    keep_state_and_data;
 draining(_EventType, _Event, _Data) ->
-    {stop, not_implemented}.
+    keep_state_and_data.
 
 -spec stopped(gen_statem:event_type(), term(), #data{}) ->
-    gen_statem:event_handler_result(atom()).
+    gen_statem:state_enter_result(atom()) | gen_statem:event_handler_result(atom()).
+stopped(enter, _OldState, Data) ->
+    ?LOG_INFO("loom_engine_coordinator ~s: entering stopped state",
+              [Data#data.engine_id]),
+    update_meta_status(stopped, Data),
+    {stop, normal, Data};
 stopped(_EventType, _Event, _Data) ->
-    {stop, not_implemented}.
+    %% Should not be reached since enter stops the process, but required
+    %% for completeness.
+    keep_state_and_data.
 
 -spec terminate(term(), atom(), #data{}) -> any().
-terminate(_Reason, _State, _Data) ->
+terminate(_Reason, _State, Data) ->
+    %% Stop port if alive
+    stop_port(Data),
+    %% Delete both ETS tables with catch to avoid crashes if already deleted
+    catch ets:delete(Data#data.reqs_table),
+    catch ets:delete(Data#data.meta_table),
     ok.
+
+%%====================================================================
+%% Internal helpers
+%%====================================================================
+
+%% @doc Build loom_port options from coordinator config.
+%% ASSUMPTION: The coordinator is always the owner of its loom_port instance.
+-spec build_port_opts(map()) -> map().
+build_port_opts(Config) ->
+    BaseOpts = #{
+        command => maps:get(command, Config),
+        args    => maps:get(args, Config, []),
+        owner   => self()
+    },
+    %% Merge any extra port_opts from the config (e.g., timeouts)
+    PortOpts = maps:get(port_opts, Config, #{}),
+    maps:merge(BaseOpts, PortOpts).
+
+%% @doc Shutdown the port if it is alive.
+-spec stop_port(#data{}) -> ok.
+stop_port(#data{port_pid = undefined}) ->
+    ok;
+stop_port(#data{port_pid = PortPid}) ->
+    case is_process_alive(PortPid) of
+        true  -> loom_port:shutdown(PortPid);
+        false -> ok
+    end.
+
+%% @doc Update the status field in the meta ETS table.
+-spec update_meta_status(atom(), #data{}) -> true.
+update_meta_status(Status, #data{meta_table = MetaTable}) ->
+    ets:update_element(MetaTable, meta, {2, Status}).
+
+%% @doc Normalize port exit codes. Raw exit_status from Erlang ports can
+%% be OS-dependent; this helper ensures consistent representation.
+%% ASSUMPTION: Exit codes are non-negative integers or the atom 'killed'.
+-spec normalize_exit_code(term()) -> non_neg_integer() | killed.
+normalize_exit_code(killed) -> killed;
+normalize_exit_code(Code) when is_integer(Code), Code >= 0 -> Code;
+normalize_exit_code(_Other) -> 1.
