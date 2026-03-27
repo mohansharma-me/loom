@@ -197,7 +197,11 @@ validate_single_engine(Engine, Seen) ->
                     case validate_engine_name_format(Name) of
                         ok ->
                             case validate_engine_backend(Engine, Name) of
-                                ok -> validate_engine_optional_fields(Engine, Name);
+                                ok ->
+                                    case validate_adapter_exists(Engine, Name) of
+                                        ok -> validate_engine_optional_fields(Engine, Name);
+                                        Err -> Err
+                                    end;
                                 Err -> Err
                             end;
                         Err -> Err
@@ -234,6 +238,19 @@ validate_engine_backend(#{backend := Backend}, Name) ->
     case adapter_filename(Backend) of
         {ok, _} -> ok;
         error -> {error, {validation, {unknown_backend, Backend, engine, Name}}}
+    end.
+
+-spec validate_adapter_exists(map(), binary()) -> ok | {error, term()}.
+validate_adapter_exists(Engine, Name) ->
+    case resolve_adapter(Engine) of
+        {ok, Path} ->
+            case filelib:is_regular(Path) of
+                true -> ok;
+                false -> {error, {validation, {adapter_not_found, Path, engine, Name}}}
+            end;
+        {error, _} ->
+            %% Already caught by validate_engine_backend
+            ok
     end.
 
 -spec validate_engine_optional_fields(map(), binary()) -> {ok, binary()} | {error, term()}.

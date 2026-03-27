@@ -246,7 +246,9 @@ validate_unknown_backend_no_adapter_cmd_test() ->
 
 validate_unknown_backend_with_adapter_cmd_test() ->
     cleanup_ets(),
-    Json = <<"{\"engines\": [{\"name\": \"e1\", \"backend\": \"custom\", \"model\": \"m\", \"adapter_cmd\": \"/bin/true\"}]}">>,
+    MockAdapter = filename:join([code:priv_dir(loom), "python", "loom_adapter_mock.py"]),
+    Json = iolist_to_binary([<<"{\"engines\": [{\"name\": \"e1\", \"backend\": \"custom\", \"model\": \"m\", \"adapter_cmd\": \"">>,
+                             list_to_binary(MockAdapter), <<"\"}]}">>]),
     Path = write_temp_file(Json),
     ?assertEqual(ok, loom_config:load(Path)),
     file:delete(Path),
@@ -268,6 +270,35 @@ validate_invalid_timeout_type_test() ->
     file:delete(Path),
     cleanup_ets().
 
+validate_adapter_not_found_test() ->
+    cleanup_ets(),
+    Json = <<"{\"engines\": [{\"name\": \"e1\", \"backend\": \"custom\", \"model\": \"m\", \"adapter_cmd\": \"/nonexistent/adapter.py\"}]}">>,
+    Path = write_temp_file(Json),
+    ?assertMatch({error, {validation, {adapter_not_found, "/nonexistent/adapter.py", engine, <<"e1">>}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+%% --- Server IP parsing ---
+
+server_ip_string_to_tuple_test() ->
+    cleanup_ets(),
+    Json = <<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\", \"model\": \"m\"}], \"server\": {\"port\": 9090, \"ip\": \"127.0.0.1\"}}">>,
+    Path = write_temp_file(Json),
+    ok = loom_config:load(Path),
+    Server = loom_config:get_server(),
+    ?assertEqual({127,0,0,1}, maps:get(ip, Server)),
+    ?assertEqual(9090, maps:get(port, Server)),
+    file:delete(Path),
+    cleanup_ets().
+
+server_ip_default_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("minimal.json")),
+    Server = loom_config:get_server(),
+    ?assertEqual({0,0,0,0}, maps:get(ip, Server)),
+    cleanup_ets().
+
 %% --- Adapter integrated into engine config ---
 
 engine_config_has_adapter_cmd_test() ->
@@ -281,11 +312,13 @@ engine_config_has_adapter_cmd_test() ->
 
 engine_config_custom_adapter_cmd_test() ->
     cleanup_ets(),
-    Json = <<"{\"engines\": [{\"name\": \"e1\", \"backend\": \"custom\", \"model\": \"m\", \"adapter_cmd\": \"/bin/true\"}]}">>,
+    MockAdapter = filename:join([code:priv_dir(loom), "python", "loom_adapter_mock.py"]),
+    Json = iolist_to_binary([<<"{\"engines\": [{\"name\": \"e1\", \"backend\": \"custom\", \"model\": \"m\", \"adapter_cmd\": \"">>,
+                             list_to_binary(MockAdapter), <<"\"}]}">>]),
     Path = write_temp_file(Json),
     ok = loom_config:load(Path),
     {ok, E} = loom_config:get_engine(<<"e1">>),
-    ?assertEqual("/bin/true", maps:get(adapter_cmd, E)),
+    ?assertEqual(MockAdapter, maps:get(adapter_cmd, E)),
     file:delete(Path),
     cleanup_ets().
 
