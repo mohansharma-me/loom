@@ -499,7 +499,7 @@ drain_timeout_test(_Config) ->
 %% @doc Tests that the coordinator stores its own pid in the meta ETS table
 %% under the key `coordinator_pid', allowing HTTP handlers to do a lock-free
 %% ETS lookup instead of going through a GenServer message.
-coordinator_pid_in_ets(Config) ->
+coordinator_pid_in_ets(_Config) ->
     CoordConfig = default_config(),
     {ok, Pid} = loom_engine_coordinator:start_link(CoordConfig),
     EngineId = maps:get(engine_id, CoordConfig),
@@ -508,12 +508,11 @@ coordinator_pid_in_ets(Config) ->
     ?assertEqual(Pid, StoredPid),
     loom_engine_coordinator:stop(Pid),
     wait_dead(Pid, 5000),
-    _ = Config,
     ok.
 
 %% @doc Tests that generate/4 accepts an explicit timeout parameter and behaves
 %% identically to generate/3 but uses the provided timeout for the call.
-generate_with_timeout(Config) ->
+generate_with_timeout(_Config) ->
     CoordConfig = default_config(),
     {ok, Pid} = loom_engine_coordinator:start_link(CoordConfig),
     EngineId = maps:get(engine_id, CoordConfig),
@@ -528,7 +527,6 @@ generate_with_timeout(Config) ->
     end,
     loom_engine_coordinator:stop(Pid),
     wait_dead(Pid, 5000),
-    _ = Config,
     ok.
 
 %%====================================================================
