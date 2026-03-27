@@ -1,0 +1,19 @@
+{
+  "engines": [
+    {
+      "name": "engine_alpha",
+      "backend": "mock",
+      "model": "test-model-a",
+      "gpu_ids": []
+    },
+    {
+      "name": "engine_beta",
+      "backend": "mock",
+      "model": "test-model-b",
+      "gpu_ids": []
+    }
+  ],
+  "server": {
+    "port": 9997
+  }
+}

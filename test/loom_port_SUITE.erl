@@ -50,6 +50,10 @@ all() ->
     ].
 
 init_per_suite(Config) ->
+    %% Pre-load config so loom_app:start/2 skips file-based loading.
+    %% ASSUMPTION: loom_app checks ETS existence before loading config/loom.json,
+    %% so pre-loading here avoids CWD-dependent config resolution in test.
+    ok = loom_config:load(test_config_path()),
     %% Start the loom application so code:priv_dir(loom) resolves correctly.
     %% ASSUMPTION: application:ensure_all_started/1 is idempotent; if loom is
     %% already running (e.g., from a prior suite) it just returns {ok, []}.
@@ -287,6 +291,24 @@ shutdown_during_loading_test(_Config) ->
 %%====================================================================
 %% Helpers
 %%====================================================================
+
+%% @doc Path to the test loom.json config file for this suite.
+-spec test_config_path() -> file:filename().
+test_config_path() ->
+    %% ASSUMPTION: The test data dir is relative to the project root,
+    %% and we can locate it via the source file's compiled path.
+    DataDir = filename:join([
+        filename:dirname(filename:dirname(code:which(?MODULE))),
+        "test", "loom_port_SUITE_data", "loom.json"
+    ]),
+    case filelib:is_regular(DataDir) of
+        true -> DataDir;
+        false ->
+            Fallback = filename:join(["test", "loom_port_SUITE_data", "loom.json"]),
+            ct:pal("Warning: primary config path ~s not found, trying ~s",
+                   [DataDir, Fallback]),
+            Fallback
+    end.
 
 %% @doc Path to the mock adapter Python script.
 -spec mock_adapter_path() -> string().

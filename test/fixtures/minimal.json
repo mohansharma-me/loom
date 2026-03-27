@@ -1,7 +1,7 @@
 {
   "engines": [
     {
-      "name": "test_engine",
+      "name": "fixture_engine",
       "backend": "mock",
       "model": "test-model",
       "gpu_ids": [0]

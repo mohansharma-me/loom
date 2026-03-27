@@ -63,10 +63,18 @@ all() ->
     ].
 
 init_per_suite(Config) ->
+    %% Pre-load config before starting loom so loom_app:start/2 skips
+    %% file-based loading (avoids CWD-dependent config resolution in test).
+    ok = loom_config:load(fixture_path("minimal.json")),
     {ok, _} = application:ensure_all_started(loom),
     Config.
 
 end_per_suite(_Config) ->
+    %% ASSUMPTION: loom_sup starts loom_http_server, which manages a Cowboy
+    %% listener (under ranch_sup). Stopping loom triggers loom_http_server:terminate/2,
+    %% which stops the Cowboy listener. Explicit stop here ensures cleanup even
+    %% if loom_app didn't fully start.
+    catch application:stop(loom),
     ok.
 
 init_per_testcase(_TestCase, Config) ->
@@ -329,6 +337,11 @@ start_monitor_coordinator_not_found_test(_Config) ->
 %%====================================================================
 %% Helpers
 %%====================================================================
+
+%% @doc Path to test fixture JSON files.
+fixture_path(Name) ->
+    TestDir = filename:dirname(?FILE),
+    filename:join([TestDir, "fixtures", Name]).
 
 mock_adapter_path() ->
     filename:join([code:priv_dir(loom), "scripts", "mock_adapter.py"]).

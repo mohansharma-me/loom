@@ -61,6 +61,9 @@ all() ->
     ].
 
 init_per_suite(Config) ->
+    %% Pre-load config before starting loom so loom_app:start/2 skips
+    %% file-based loading (avoids CWD-dependent config resolution in test).
+    ok = loom_config:load(fixture_path("minimal.json")),
     %% Start the loom application so code:priv_dir(loom) resolves correctly.
     %% ASSUMPTION: application:ensure_all_started/1 is idempotent; if loom is
     %% already running (e.g., from a prior suite) it just returns {ok, []}.
@@ -532,6 +535,11 @@ generate_with_timeout(_Config) ->
 %%====================================================================
 %% Helpers
 %%====================================================================
+
+%% @doc Path to test fixture JSON files.
+fixture_path(Name) ->
+    TestDir = filename:dirname(?FILE),
+    filename:join([TestDir, "fixtures", Name]).
 
 %% @doc Path to the mock adapter Python script.
 mock_adapter_path() ->

@@ -2,7 +2,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([
     request_id_attached/1,
     content_type_rejected/1,
@@ -12,10 +12,18 @@
 all() -> [request_id_attached, content_type_rejected, get_request_passes].
 
 init_per_suite(Config) ->
-    {ok, _} = application:ensure_all_started(loom),
+    %% ASSUMPTION: Handler tests need isolated control with a mock coordinator,
+    %% not the full loom application. Starting loom would launch loom_sup which
+    %% starts loom_http_server (Cowboy), causing an already_started error when
+    %% we call loom_http:start() below. Start only the dependencies we need.
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
+    {ok, _} = application:ensure_all_started(cowboy),
     {ok, _} = application:ensure_all_started(gun),
+    %% Stop any leftover loom app / Cowboy listener from a prior suite
+    catch application:stop(loom),
+    catch cowboy:stop_listener(loom_http_listener),
     {ok, MockPid} = loom_mock_coordinator:start_link(#{engine_id => <<"engine_0">>}),
-    application:set_env(loom, http, #{port => 18080, engine_id => <<"engine_0">>}),
     {ok, _} = loom_http:start(),
     [{mock_pid, MockPid} | Config].
 
@@ -23,6 +31,14 @@ end_per_suite(Config) ->
     catch loom_http:stop(),
     catch loom_mock_coordinator:stop(?config(mock_pid, Config)),
     ok.
+
+init_per_testcase(_TC, Config) ->
+    %% Reload config each test case to ensure a clean ETS baseline.
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
+    Config.
+
+end_per_testcase(_TC, _Config) -> ok.
 
 request_id_attached(_Config) ->
     {ok, ConnPid} = gun:open("127.0.0.1", 18080),

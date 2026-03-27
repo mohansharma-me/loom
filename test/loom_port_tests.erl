@@ -41,13 +41,8 @@ happy_path_startup_test() ->
     ?assert(is_integer(OsPid) andalso OsPid > 0),
     %% Shutdown
     ok = loom_port:shutdown(Pid),
-    %% Wait for exit notification
-    receive
-        {loom_port_exit, _Ref2, _ExitCode} ->
-            ok
-    after 10000 ->
-        ?assert(false)
-    end,
+    %% Wait for exit notification and drain EXIT signal
+    wait_for_exit(),
     %% Process should be dead
     ?assertNot(is_process_alive(Pid)).
 
@@ -157,6 +152,8 @@ graceful_shutdown_test() ->
     after 10000 ->
         ?assert(false)
     end,
+    %% Drain EXIT signal before checking process liveness
+    receive {'EXIT', Pid, _} -> ok after 5000 -> ok end,
     ?assertNot(is_process_alive(Pid)).
 
 double_shutdown_test() ->

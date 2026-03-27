@@ -2,16 +2,24 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([models_list/1, models_no_engine/1]).
 
 all() -> [models_list, models_no_engine].
 
 init_per_suite(Config) ->
-    {ok, _} = application:ensure_all_started(loom),
+    %% ASSUMPTION: Handler tests need isolated control with a mock coordinator,
+    %% not the full loom application. Starting loom would launch loom_sup which
+    %% starts loom_http_server (Cowboy), causing an already_started error when
+    %% we call loom_http:start() below. Start only the dependencies we need.
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
+    {ok, _} = application:ensure_all_started(cowboy),
     {ok, _} = application:ensure_all_started(gun),
+    %% Stop any leftover loom app / Cowboy listener from a prior suite
+    catch application:stop(loom),
+    catch cowboy:stop_listener(loom_http_listener),
     {ok, MockPid} = loom_mock_coordinator:start_link(#{engine_id => <<"engine_0">>}),
-    application:set_env(loom, http, #{port => 18082, engine_id => <<"engine_0">>}),
     {ok, _} = loom_http:start(),
     [{mock_pid, MockPid} | Config].
 
@@ -19,6 +27,15 @@ end_per_suite(Config) ->
     catch loom_http:stop(),
     catch loom_mock_coordinator:stop(?config(mock_pid, Config)),
     ok.
+
+init_per_testcase(_TC, Config) ->
+    %% Reload config each test case to ensure a clean ETS baseline.
+    %% Tests like models_no_engine directly mutate ETS keys.
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
+    Config.
+
+end_per_testcase(_TC, _Config) -> ok.
 
 models_list(_Config) ->
     {ok, ConnPid} = gun:open("127.0.0.1", 18082),
@@ -33,13 +50,17 @@ models_list(_Config) ->
     gun:close(ConnPid).
 
 models_no_engine(_Config) ->
-    application:set_env(loom, http, #{port => 18082, engine_id => <<"nonexistent">>}),
-    {ok, ConnPid} = gun:open("127.0.0.1", 18082),
-    {ok, _} = gun:await_up(ConnPid),
-    StreamRef = gun:get(ConnPid, "/v1/models"),
-    {response, nofin, 200, _} = gun:await(ConnPid, StreamRef),
-    {ok, Body} = gun:await_body(ConnPid, StreamRef),
-    Decoded = loom_json:decode(Body),
-    ?assertEqual([], maps:get(<<"data">>, Decoded)),
-    application:set_env(loom, http, #{port => 18082, engine_id => <<"engine_0">>}),
-    gun:close(ConnPid).
+    %% Temporarily override engine names in ETS to simulate nonexistent engine
+    ets:insert(loom_config, {{engine, names}, [<<"nonexistent">>]}),
+    try
+        {ok, ConnPid} = gun:open("127.0.0.1", 18082),
+        {ok, _} = gun:await_up(ConnPid),
+        StreamRef = gun:get(ConnPid, "/v1/models"),
+        {response, nofin, 200, _} = gun:await(ConnPid, StreamRef),
+        {ok, Body} = gun:await_body(ConnPid, StreamRef),
+        Decoded = loom_json:decode(Body),
+        ?assertEqual([], maps:get(<<"data">>, Decoded)),
+        gun:close(ConnPid)
+    after
+        ets:insert(loom_config, {{engine, names}, [<<"engine_0">>]})
+    end.

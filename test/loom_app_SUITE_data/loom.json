@@ -1,0 +1,13 @@
+{
+  "engines": [
+    {
+      "name": "test_engine",
+      "backend": "mock",
+      "model": "test-model",
+      "gpu_ids": []
+    }
+  ],
+  "server": {
+    "port": 9999
+  }
+}

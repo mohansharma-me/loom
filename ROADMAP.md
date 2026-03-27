@@ -39,7 +39,7 @@ Standards and practices that apply across all phases.
 - [x] `loom_engine_sup` rest_for_one supervisor — [#10](https://github.com/mohansharma-me/loom/issues/10) `P0-09`
 - [x] `/v1/chat/completions` endpoint with SSE streaming (Cowboy) — [#11](https://github.com/mohansharma-me/loom/issues/11) `P0-10`
 - [x] JSON configuration parsing module (`loom_config`) — [#65](https://github.com/mohansharma-me/loom/issues/65) `CC-04` *(pulled to P0 — prerequisite for #12)*
-- [ ] Wire all components into application supervisor tree — [#12](https://github.com/mohansharma-me/loom/issues/12) `P0-11`
+- [x] Wire all components into application supervisor tree — [#12](https://github.com/mohansharma-me/loom/issues/12) `P0-11`
 
 ### API Endpoints
 - [x] `/v1/messages` endpoint — Anthropic Messages API compatibility — [#64](https://github.com/mohansharma-me/loom/issues/64) `P0-16`
@@ -136,13 +136,13 @@ Standards and practices that apply across all phases.
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 4 | 1 | 0 | 3 |
-| Phase 0 | 18 | 13 | 0 | 5 |
+| Phase 0 | 18 | 14 | 0 | 4 |
 | Phase 1 | 11 | 0 | 0 | 11 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **54** | **14** | **0** | **40** |
+| **Total** | **54** | **15** | **0** | **39** |
 
 ## What's Next
 
@@ -159,4 +159,4 @@ Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 9. ~~**#10 — P0-09:** Engine supervisor (loom_engine_sup rest_for_one)~~ ✓
 10. ~~**#11 — P0-10:** HTTP API with SSE streaming (Cowboy)~~ ✓
 11. ~~**#65 — CC-04:** JSON configuration parsing module (`loom_config`)~~ ✓
-12. **#12 — P0-11:** Wire all components into application supervisor tree
+12. ~~**#12 — P0-11:** Wire all components into application supervisor tree~~ ✓
