@@ -14,7 +14,7 @@ Standards and practices that apply across all phases.
 - [ ] **Testing strategy and infrastructure** — [#49](https://github.com/mohansharma-me/loom/issues/49) `CC-01`
 - [ ] **Structured logging and observability conventions** — [#50](https://github.com/mohansharma-me/loom/issues/50) `CC-02`
 - [ ] **Type specs and Dialyzer compliance** — [#51](https://github.com/mohansharma-me/loom/issues/51) `CC-03`
-- [ ] **JSON configuration parsing module (`loom_config`)** — [#65](https://github.com/mohansharma-me/loom/issues/65) `CC-04`
+- [x] **JSON configuration parsing module (`loom_config`)** — [#65](https://github.com/mohansharma-me/loom/issues/65) `CC-04` *(pulled to P0 — prerequisite for #12)*
 
 ---
 
@@ -38,6 +38,7 @@ Standards and practices that apply across all phases.
 - [x] `loom_engine_coordinator` GenServer for engine lifecycle — [#9](https://github.com/mohansharma-me/loom/issues/9) `P0-08`
 - [x] `loom_engine_sup` rest_for_one supervisor — [#10](https://github.com/mohansharma-me/loom/issues/10) `P0-09`
 - [x] `/v1/chat/completions` endpoint with SSE streaming (Cowboy) — [#11](https://github.com/mohansharma-me/loom/issues/11) `P0-10`
+- [x] JSON configuration parsing module (`loom_config`) — [#65](https://github.com/mohansharma-me/loom/issues/65) `CC-04` *(pulled to P0 — prerequisite for #12)*
 - [ ] Wire all components into application supervisor tree — [#12](https://github.com/mohansharma-me/loom/issues/12) `P0-11`
 
 ### API Endpoints
@@ -134,14 +135,14 @@ Standards and practices that apply across all phases.
 
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
-| Cross-Cutting | 4 | 0 | 0 | 4 |
-| Phase 0 | 17 | 12 | 0 | 5 |
+| Cross-Cutting | 4 | 1 | 0 | 3 |
+| Phase 0 | 18 | 13 | 0 | 5 |
 | Phase 1 | 11 | 0 | 0 | 11 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **53** | **12** | **0** | **41** |
+| **Total** | **54** | **14** | **0** | **40** |
 
 ## What's Next
 
@@ -157,4 +158,5 @@ Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 8. ~~**#9 — P0-08:** Engine lifecycle management (loom_engine_coordinator)~~ ✓
 9. ~~**#10 — P0-09:** Engine supervisor (loom_engine_sup rest_for_one)~~ ✓
 10. ~~**#11 — P0-10:** HTTP API with SSE streaming (Cowboy)~~ ✓
-11. **#12 — P0-11:** Wire all components into application supervisor tree
+11. ~~**#65 — CC-04:** JSON configuration parsing module (`loom_config`)~~ ✓
+12. **#12 — P0-11:** Wire all components into application supervisor tree
