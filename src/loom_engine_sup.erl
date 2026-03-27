@@ -105,7 +105,7 @@ start_monitor_with_lookup(EngineId, GpuId, GpuOpts) ->
     end.
 
 %% @doc Derive the supervisor registered name from engine_id.
-%% ASSUMPTION: engine_id is validated as [a-zA-Z0-9_]+ (max 64 bytes)
+%% ASSUMPTION: engine_id is validated as [a-zA-Z0-9._-]+ (max 64 bytes)
 %% by validate_engine_id/1 in this module before sup_name/1 is called.
 %% The derived atom is safe.
 -spec sup_name(binary()) -> atom().
@@ -187,7 +187,7 @@ validate_engine_id(Config) ->
                 true ->
                     {error, {invalid_engine_id, too_long}};
                 false ->
-                    case re:run(Id, <<"^[a-zA-Z0-9_]+$">>) of
+                    case re:run(Id, <<"^[a-zA-Z0-9._-]+$">>) of
                         {match, _} -> ok;
                         nomatch -> {error, {invalid_engine_id, bad_format}}
                     end

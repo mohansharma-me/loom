@@ -1,0 +1,36 @@
+{
+  "engines": [
+    {
+      "name": "engine_a",
+      "backend": "mock",
+      "model": "model-a",
+      "gpu_ids": [0],
+      "port": {
+        "heartbeat_timeout_ms": 30000
+      },
+      "gpu_monitor": {
+        "poll_interval_ms": 2000,
+        "thresholds": {
+          "mem_percent": 80.0
+        }
+      },
+      "coordinator": {
+        "max_concurrent": 256
+      }
+    },
+    {
+      "name": "engine_b",
+      "backend": "mock",
+      "model": "model-b",
+      "gpu_ids": [1]
+    }
+  ],
+  "defaults": {
+    "port": {
+      "heartbeat_timeout_ms": 20000
+    },
+    "coordinator": {
+      "max_concurrent": 128
+    }
+  }
+}

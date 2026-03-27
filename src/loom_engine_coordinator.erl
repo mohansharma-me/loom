@@ -109,13 +109,13 @@ check_required([Key | Rest], Config) ->
             {error, {empty_required, Key}};
         {ok, Val} when Key =:= engine_id, is_binary(Val) ->
             %% ASSUMPTION: engine_id is used to construct ETS table names via
-            %% binary_to_atom/1. Restricting to [a-zA-Z0-9_] and max 64 bytes
+            %% binary_to_atom/1. Restricting to [a-zA-Z0-9._-] and max 64 bytes
             %% prevents atom table pollution from untrusted input.
             case byte_size(Val) > 64 of
                 true ->
                     {error, {invalid_engine_id, too_long}};
                 false ->
-                    case re:run(Val, <<"^[a-zA-Z0-9_]+$">>) of
+                    case re:run(Val, <<"^[a-zA-Z0-9._-]+$">>) of
                         {match, _} -> check_required(Rest, Config);
                         nomatch -> {error, {invalid_engine_id, bad_format}}
                     end
