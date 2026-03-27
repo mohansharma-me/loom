@@ -11,7 +11,9 @@
     http_server_lifecycle_test/1,
     app_start_fails_on_bad_config_test/1,
     app_start_skips_reload_if_preloaded_test/1,
-    supervisor_has_correct_children_test/1
+    supervisor_has_correct_children_test/1,
+    health_endpoint_returns_ready_test/1,
+    chat_completions_returns_tokens_test/1
 ]).
 
 all() ->
@@ -20,7 +22,9 @@ all() ->
         http_server_lifecycle_test,
         app_start_fails_on_bad_config_test,
         app_start_skips_reload_if_preloaded_test,
-        supervisor_has_correct_children_test
+        supervisor_has_correct_children_test,
+        health_endpoint_returns_ready_test,
+        chat_completions_returns_tokens_test
     ].
 
 init_per_suite(Config) ->
@@ -28,6 +32,9 @@ init_per_suite(Config) ->
     %% ranch_sup is available for loom_http_server lifecycle tests.
     %% We do NOT start the full loom application to keep tests isolated.
     {ok, _} = application:ensure_all_started(cowboy),
+    %% ASSUMPTION: inets is needed for httpc (HTTP client) used in
+    %% health and chat completions integration tests.
+    {ok, _} = application:ensure_all_started(inets),
     Config.
 
 end_per_suite(_Config) ->
@@ -149,6 +156,59 @@ supervisor_has_correct_children_test(_Config) ->
     %% Engine supervisor child
     ExpectedEngSup = loom_engine_sup:sup_name(<<"test_engine">>),
     ?assertNotEqual(false, lists:keyfind(ExpectedEngSup, 1, Children)),
+
+    application:stop(loom).
+
+%% @doc GET /health returns 200 with ready status after app starts.
+%% ASSUMPTION: The mock adapter starts quickly enough that the engine
+%% reaches ready state within 15 seconds (wait_engine_ready timeout).
+health_endpoint_returns_ready_test(_Config) ->
+    ok = loom_config:load(test_config_path()),
+    {ok, _} = application:ensure_all_started(loom),
+    wait_engine_ready(<<"test_engine">>, 15000),
+
+    Port = maps:get(port, loom_config:get_server()),
+    Url = "http://127.0.0.1:" ++ integer_to_list(Port) ++ "/health",
+    {ok, {{_, 200, _}, _Headers, Body}} = httpc:request(get, {Url, []}, [], []),
+
+    Decoded = json:decode(list_to_binary(Body)),
+    ?assertEqual(<<"ready">>, maps:get(<<"status">>, Decoded)),
+    ?assertEqual(<<"test_engine">>, maps:get(<<"engine_id">>, Decoded)),
+
+    application:stop(loom).
+
+%% @doc POST /v1/chat/completions with mock adapter returns tokens.
+%% ASSUMPTION: The mock adapter returns a non-streaming OpenAI-compatible
+%% response with choices containing the concatenated mock tokens
+%% ("Hello", "from", "Loom", "mock", "adapter").
+chat_completions_returns_tokens_test(_Config) ->
+    ok = loom_config:load(test_config_path()),
+    {ok, _} = application:ensure_all_started(loom),
+    wait_engine_ready(<<"test_engine">>, 15000),
+
+    Port = maps:get(port, loom_config:get_server()),
+    Url = "http://127.0.0.1:" ++ integer_to_list(Port) ++ "/v1/chat/completions",
+    RequestBody = iolist_to_binary(json:encode(#{
+        <<"model">> => <<"test-model">>,
+        <<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => <<"hello">>}],
+        <<"stream">> => false
+    })),
+    Headers = [{"content-type", "application/json"}],
+    {ok, {{_, StatusCode, _}, _RespHeaders, RespBody}} =
+        httpc:request(post, {Url, Headers, "application/json",
+                             binary_to_list(RequestBody)}, [], []),
+
+    ?assertEqual(200, StatusCode),
+    Decoded = json:decode(list_to_binary(RespBody)),
+    %% Mock adapter returns an OpenAI-compatible response with choices
+    ?assert(maps:is_key(<<"choices">>, Decoded)),
+    [Choice | _] = maps:get(<<"choices">>, Decoded),
+    Message = maps:get(<<"message">>, Choice),
+    Content = maps:get(<<"content">>, Message),
+    %% Mock adapter concatenates tokens: "Hello" ++ "from" ++ "Loom" ++ "mock" ++ "adapter"
+    ?assertEqual(<<"HellofromLoommockadapter">>, Content),
+    %% Verify usage stats are present
+    ?assert(maps:is_key(<<"usage">>, Decoded)),
 
     application:stop(loom).
 
