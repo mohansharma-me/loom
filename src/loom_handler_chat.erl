@@ -8,12 +8,12 @@
 -record(state, {
     request_id :: binary() | undefined,
     engine_request_id :: binary() | undefined,
-    model :: binary(),
-    stream :: boolean(),
-    tokens :: [binary()],
-    created :: non_neg_integer(),
-    headers_sent :: boolean(),
-    inactivity_timeout :: non_neg_integer()
+    model :: binary() | undefined,
+    stream :: boolean() | undefined,
+    tokens = [] :: [binary()],
+    created :: non_neg_integer() | undefined,
+    headers_sent = false :: boolean(),
+    inactivity_timeout :: non_neg_integer() | undefined
 }).
 
 -spec init(cowboy_req:req(), any()) ->
