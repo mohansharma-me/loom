@@ -4,6 +4,7 @@
 %% ASSUMPTION: This gen_server is a lifecycle wrapper only. It does NOT sit in
 %% the HTTP request path. Cowboy manages its own process tree under ranch_sup.
 %% This module exists so loom_sup can start/stop Cowboy as a supervised child.
+%% On terminate, it calls loom_http:stop() to remove the Cowboy listener from ranch_sup.
 
 -export([start_link/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -35,10 +36,11 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 -spec handle_info(term(), map()) -> {noreply, map()}.
-handle_info(_Info, State) ->
+handle_info(Info, State) ->
+    ?LOG_WARNING(#{msg => unexpected_message, info => Info}),
     {noreply, State}.
 
 -spec terminate(term(), map()) -> ok.
-terminate(_Reason, _State) ->
-    loom_http:stop(),
-    ok.
+terminate(Reason, _State) ->
+    ?LOG_INFO(#{msg => http_server_terminating, reason => Reason}),
+    loom_http:stop().

@@ -27,7 +27,7 @@ generate_request_id() ->
 unix_timestamp() ->
     erlang:system_time(second).
 
-%% ASSUMPTION: default_config/0 now only carries handler-specific defaults
+%% ASSUMPTION: default_config/0 carries only handler-specific defaults
 %% (timeouts, body size). Server settings (port, ip, max_connections) come from
 %% loom_config:get_server/0, which merges its own hardcoded defaults.
 -spec default_config() -> map().
@@ -43,9 +43,15 @@ get_config() ->
     ServerConfig = loom_config:get_server(),
     EngineId = case loom_config:engine_names() of
         [First | _] -> First;
-        [] -> <<"engine_0">>
+        [] ->
+            %% ASSUMPTION: loom_config:validate/1 rejects empty engine lists,
+            %% so this branch should be unreachable in production. Crash rather
+            %% than inventing a phantom engine_id that would produce confusing 503s.
+            error(no_engines_configured)
     end,
     HandlerDefaults = default_config(),
+    %% maps:merge gives priority to the second argument (ServerConfig).
+    %% If server config and handler defaults share keys, server config wins.
     maps:merge(HandlerDefaults, ServerConfig#{engine_id => EngineId}).
 
 -spec json_response(non_neg_integer(), map() | binary(), cowboy_req:req()) ->

@@ -41,9 +41,9 @@ end_per_suite(Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
-    %% ASSUMPTION: CT runs init_per_suite in a temporary process whose death
-    %% destroys ETS tables it created. Reload config each test case to ensure
-    %% the loom_config ETS table exists for tests that manipulate it directly.
+    %% Reload config each test case to ensure a clean ETS baseline.
+    %% Tests like engine_unavailable and inactivity_timeout directly mutate
+    %% ETS keys, so we reload to restore known-good state.
     DataDir = ?config(data_dir, Config),
     ok = loom_config:load(filename:join(DataDir, "loom.json")),
     MockPid = ?config(mock_pid, Config),
@@ -125,18 +125,20 @@ engine_overloaded(Config) ->
 engine_unavailable(_Config) ->
     %% Temporarily override engine names in ETS to simulate nonexistent engine
     ets:insert(loom_config, {{engine, names}, [<<"nonexistent">>]}),
-    {ok, ConnPid} = gun:open("127.0.0.1", 18083),
-    {ok, _} = gun:await_up(ConnPid),
-    Body = loom_json:encode(#{
-        <<"model">> => <<"mock">>,
-        <<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => <<"hi">>}]
-    }),
-    StreamRef = gun:post(ConnPid, "/v1/chat/completions",
-        [{<<"content-type">>, <<"application/json">>}], Body),
-    {response, nofin, 503, _} = gun:await(ConnPid, StreamRef),
-    %% Restore engine names
-    ets:insert(loom_config, {{engine, names}, [<<"engine_0">>]}),
-    gun:close(ConnPid).
+    try
+        {ok, ConnPid} = gun:open("127.0.0.1", 18083),
+        {ok, _} = gun:await_up(ConnPid),
+        Body = loom_json:encode(#{
+            <<"model">> => <<"mock">>,
+            <<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => <<"hi">>}]
+        }),
+        StreamRef = gun:post(ConnPid, "/v1/chat/completions",
+            [{<<"content-type">>, <<"application/json">>}], Body),
+        {response, nofin, 503, _} = gun:await(ConnPid, StreamRef),
+        gun:close(ConnPid)
+    after
+        ets:insert(loom_config, {{engine, names}, [<<"engine_0">>]})
+    end.
 
 malformed_json(_Config) ->
     {ok, ConnPid} = gun:open("127.0.0.1", 18083),
@@ -182,19 +184,21 @@ inactivity_timeout(Config) ->
     [{_, OrigServerConfig}] = ets:lookup(loom_config, {server, config}),
     ets:insert(loom_config, {{server, config},
         OrigServerConfig#{inactivity_timeout => 500}}),
-    {ok, ConnPid} = gun:open("127.0.0.1", 18083),
-    {ok, _} = gun:await_up(ConnPid),
-    Body = loom_json:encode(#{
-        <<"model">> => <<"mock">>,
-        <<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => <<"hi">>}],
-        <<"stream">> => false
-    }),
-    StreamRef = gun:post(ConnPid, "/v1/chat/completions",
-        [{<<"content-type">>, <<"application/json">>}], Body),
-    {response, nofin, 504, _} = gun:await(ConnPid, StreamRef, 10000),
-    %% Restore server config
-    ets:insert(loom_config, {{server, config}, OrigServerConfig}),
-    gun:close(ConnPid).
+    try
+        {ok, ConnPid} = gun:open("127.0.0.1", 18083),
+        {ok, _} = gun:await_up(ConnPid),
+        Body = loom_json:encode(#{
+            <<"model">> => <<"mock">>,
+            <<"messages">> => [#{<<"role">> => <<"user">>, <<"content">> => <<"hi">>}],
+            <<"stream">> => false
+        }),
+        StreamRef = gun:post(ConnPid, "/v1/chat/completions",
+            [{<<"content-type">>, <<"application/json">>}], Body),
+        {response, nofin, 504, _} = gun:await(ConnPid, StreamRef, 10000),
+        gun:close(ConnPid)
+    after
+        ets:insert(loom_config, {{server, config}, OrigServerConfig})
+    end.
 
 client_disconnect(Config) ->
     MockPid = ?config(mock_pid, Config),

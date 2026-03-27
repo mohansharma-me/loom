@@ -19,23 +19,19 @@ timestamp_test() ->
 
 default_config_test() ->
     Config = loom_http_util:default_config(),
-    %% default_config/0 now only carries handler-specific defaults
+    %% default_config/0 carries only handler-specific defaults
     ?assertEqual(60000, maps:get(inactivity_timeout, Config)),
     ?assertEqual(5000, maps:get(generate_timeout, Config)),
     ?assertEqual(10485760, maps:get(max_body_size, Config)),
-    %% Server settings no longer in default_config
+    %% Server settings not in default_config
     ?assertEqual(error, maps:find(port, Config)),
     ?assertEqual(error, maps:find(ip, Config)),
     ?assertEqual(error, maps:find(engine_id, Config)).
 
-get_config_defaults_test() ->
-    %% With no ETS table, get_config falls back to loom_config:get_server/0 defaults
+get_config_crashes_with_no_engines_test() ->
+    %% With no ETS table, get_config/0 crashes because no engines are configured
     case ets:info(loom_config) of
         undefined -> ok;
         _ -> ets:delete(loom_config)
     end,
-    Config = loom_http_util:get_config(),
-    %% Server defaults from loom_config:server_defaults/0
-    ?assertEqual(8080, maps:get(port, Config)),
-    %% engine_id falls back to <<"engine_0">> when no engines configured
-    ?assertEqual(<<"engine_0">>, maps:get(engine_id, Config)).
+    ?assertError(no_engines_configured, loom_http_util:get_config()).

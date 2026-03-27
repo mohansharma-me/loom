@@ -304,8 +304,10 @@ test_config_path() ->
     case filelib:is_regular(DataDir) of
         true -> DataDir;
         false ->
-            %% Fallback: try relative to current working directory
-            filename:join(["test", "loom_port_SUITE_data", "loom.json"])
+            Fallback = filename:join(["test", "loom_port_SUITE_data", "loom.json"]),
+            ct:pal("Warning: primary config path ~s not found, trying ~s",
+                   [DataDir, Fallback]),
+            Fallback
     end.
 
 %% @doc Path to the mock adapter Python script.

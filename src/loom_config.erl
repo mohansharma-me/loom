@@ -24,14 +24,14 @@
 %%% Hardcoded defaults
 %%% ===================================================================
 
+%% ASSUMPTION: server_defaults/0 carries only server-level settings.
+%% Handler-specific defaults (max_body_size, inactivity_timeout, generate_timeout)
+%% live in loom_http_util:default_config/0 to avoid duplicate default sources.
 -spec server_defaults() -> map().
 server_defaults() ->
     #{port => 8080,
       ip => {0, 0, 0, 0},
-      max_connections => 1024,
-      max_body_size => 10485760,
-      inactivity_timeout => 60000,
-      generate_timeout => 5000}.
+      max_connections => 1024}.
 
 -spec port_defaults() -> map().
 port_defaults() ->

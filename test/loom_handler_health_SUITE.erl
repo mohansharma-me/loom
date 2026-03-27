@@ -29,8 +29,8 @@ end_per_suite(Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
-    %% ASSUMPTION: CT runs init_per_suite in a temporary process whose death
-    %% destroys ETS tables it created. Reload config each test case.
+    %% Reload config each test case to ensure a clean ETS baseline.
+    %% Tests like health_no_engine directly mutate ETS keys.
     DataDir = ?config(data_dir, Config),
     ok = loom_config:load(filename:join(DataDir, "loom.json")),
     Config.
@@ -50,13 +50,15 @@ health_ready(_Config) ->
 health_no_engine(_Config) ->
     %% Temporarily override engine names in ETS to simulate nonexistent engine
     ets:insert(loom_config, {{engine, names}, [<<"nonexistent">>]}),
-    {ok, ConnPid} = gun:open("127.0.0.1", 18081),
-    {ok, _} = gun:await_up(ConnPid),
-    StreamRef = gun:get(ConnPid, "/health"),
-    {response, nofin, 503, _} = gun:await(ConnPid, StreamRef),
-    {ok, Body} = gun:await_body(ConnPid, StreamRef),
-    Decoded = loom_json:decode(Body),
-    ?assertEqual(<<"stopped">>, maps:get(<<"status">>, Decoded)),
-    %% Restore engine names
-    ets:insert(loom_config, {{engine, names}, [<<"engine_0">>]}),
-    gun:close(ConnPid).
+    try
+        {ok, ConnPid} = gun:open("127.0.0.1", 18081),
+        {ok, _} = gun:await_up(ConnPid),
+        StreamRef = gun:get(ConnPid, "/health"),
+        {response, nofin, 503, _} = gun:await(ConnPid, StreamRef),
+        {ok, Body} = gun:await_body(ConnPid, StreamRef),
+        Decoded = loom_json:decode(Body),
+        ?assertEqual(<<"stopped">>, maps:get(<<"status">>, Decoded)),
+        gun:close(ConnPid)
+    after
+        ets:insert(loom_config, {{engine, names}, [<<"engine_0">>]})
+    end.

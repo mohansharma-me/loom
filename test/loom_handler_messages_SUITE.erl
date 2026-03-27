@@ -36,8 +36,7 @@ end_per_suite(Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
-    %% ASSUMPTION: CT runs init_per_suite in a temporary process whose death
-    %% destroys ETS tables it created. Reload config each test case.
+    %% Reload config each test case to ensure a clean ETS baseline.
     DataDir = ?config(data_dir, Config),
     ok = loom_config:load(filename:join(DataDir, "loom.json")),
     MockPid = ?config(mock_pid, Config),

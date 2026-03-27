@@ -11,6 +11,10 @@ start_link() ->
 
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
+    %% ASSUMPTION: For Phase 0, engine supervisors are direct children of loom_sup.
+    %% KNOWLEDGE.md shows an intermediate loom_engine_pool_sup for dynamic engine
+    %% management. That will be introduced in Phase 1 when we need dynamic_supervisor
+    %% semantics for adding/removing engines at runtime.
     SupFlags = #{
         strategy => one_for_one,
         intensity => 5,
@@ -37,35 +41,48 @@ init([]) ->
 build_engine_children() ->
     Names = loom_config:engine_names(),
     lists:map(fun(Name) ->
-        {ok, EngineMap} = loom_config:get_engine(Name),
-        ChildConfig = flatten_engine_config(EngineMap),
-        SupName = loom_engine_sup:sup_name(Name),
-        #{
-            id => SupName,
-            start => {loom_engine_sup, start_link, [ChildConfig]},
-            restart => permanent,
-            shutdown => infinity,
-            type => supervisor
-        }
+        case loom_config:get_engine(Name) of
+            {ok, EngineMap} ->
+                ChildConfig = flatten_engine_config(EngineMap),
+                SupName = loom_engine_sup:sup_name(Name),
+                #{
+                    id => SupName,
+                    start => {loom_engine_sup, start_link, [ChildConfig]},
+                    restart => permanent,
+                    shutdown => infinity,
+                    type => supervisor
+                };
+            {error, not_found} ->
+                ?LOG_ERROR(#{msg => engine_config_not_found, engine_name => Name}),
+                error({engine_config_not_found, Name})
+        end
     end, Names).
 
 %% @doc Flatten loom_config engine map (nested sub-maps) into the flat
 %% format loom_engine_sup:start_link/1 expects.
 %%
-%% ASSUMPTION: All known backends (vllm, mlx, tensorrt, mock) are Python
-%% scripts that need python3 as the executable. Custom adapter_cmd in
-%% loom.json is used as the command directly (may be a compiled binary).
+%% ASSUMPTION: Known backends (vllm, mlx, tensorrt, mock) are Python scripts
+%% that need python3 as the executable. Custom adapter_cmd values are assumed
+%% to be directly executable binaries (not wrapped with python3).
 -spec flatten_engine_config(map()) -> map().
 flatten_engine_config(EngineMap) ->
+    RequiredKeys = [adapter_cmd, backend, engine_id, model],
+    case [K || K <- RequiredKeys, not maps:is_key(K, EngineMap)] of
+        [] -> ok;
+        Missing ->
+            EngineName = maps:get(name, EngineMap, <<"unknown">>),
+            error({missing_engine_config_keys, Missing, EngineName})
+    end,
+
     CoordConfig = maps:get(coordinator, EngineMap, #{}),
     EngSupConfig = maps:get(engine_sup, EngineMap, #{}),
     GpuMonConfig = maps:get(gpu_monitor, EngineMap, #{}),
     PortConfig = maps:get(port, EngineMap, #{}),
 
     AdapterPath = maps:get(adapter_cmd, EngineMap),
-    {Cmd, Args} = adapter_cmd_and_args(AdapterPath),
-
     Backend = maps:get(backend, EngineMap),
+    {Cmd, Args} = adapter_cmd_and_args(AdapterPath, Backend),
+
     Base = #{
         engine_id => maps:get(engine_id, EngineMap),
         adapter_cmd => Cmd,
@@ -96,14 +113,24 @@ flatten_engine_config(EngineMap) ->
     end, Base, OptionalGpuMon).
 
 %% @doc Determine the executable and args for launching an adapter.
-%% Python scripts need python3 as the executable; the script is an arg.
--spec adapter_cmd_and_args(string()) -> {string(), [string()]}.
-adapter_cmd_and_args(AdapterPath) ->
+%% Known Python backends need python3 as the executable; the script is an arg.
+%% Custom adapter_cmd (non-Python backends) is used directly as the command.
+-spec adapter_cmd_and_args(string(), binary()) -> {string(), [string()]}.
+adapter_cmd_and_args(AdapterPath, Backend) when
+        Backend =:= <<"vllm">>;
+        Backend =:= <<"mlx">>;
+        Backend =:= <<"tensorrt">>;
+        Backend =:= <<"mock">> ->
     case os:find_executable("python3") of
         false ->
-            ?LOG_WARNING(#{msg => python3_not_found,
-                           hint => "Falling back to adapter path as command"}),
-            {AdapterPath, []};
+            ?LOG_ERROR(#{msg => python3_not_found,
+                         adapter_path => AdapterPath,
+                         backend => Backend,
+                         hint => "Install python3 or use a custom adapter_cmd binary"}),
+            error({python3_not_found, AdapterPath});
         PythonCmd ->
             {PythonCmd, [AdapterPath]}
-    end.
+    end;
+adapter_cmd_and_args(AdapterPath, _CustomBackend) ->
+    %% Non-Python adapter (custom binary) — use directly
+    {AdapterPath, []}.

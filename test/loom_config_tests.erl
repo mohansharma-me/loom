@@ -10,9 +10,11 @@ server_defaults_test() ->
     ?assertEqual(8080, maps:get(port, Defaults)),
     ?assertEqual({0,0,0,0}, maps:get(ip, Defaults)),
     ?assertEqual(1024, maps:get(max_connections, Defaults)),
-    ?assertEqual(10485760, maps:get(max_body_size, Defaults)),
-    ?assertEqual(60000, maps:get(inactivity_timeout, Defaults)),
-    ?assertEqual(5000, maps:get(generate_timeout, Defaults)).
+    %% Handler-specific defaults (max_body_size, inactivity_timeout,
+    %% generate_timeout) are in loom_http_util:default_config/0, not here.
+    ?assertEqual(error, maps:find(max_body_size, Defaults)),
+    ?assertEqual(error, maps:find(inactivity_timeout, Defaults)),
+    ?assertEqual(error, maps:find(generate_timeout, Defaults)).
 
 port_defaults_test() ->
     Defaults = loom_config:port_defaults(),

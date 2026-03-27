@@ -5,7 +5,9 @@
 
 -include_lib("kernel/include/logger.hrl").
 
--spec start(application:start_type(), term()) -> {ok, pid()} | {error, term()}.
+%% ASSUMPTION: ignore is not expected from loom_sup:start_link/0 — it always
+%% starts children. If loom_sup ever returns ignore, propagating it as-is is correct.
+-spec start(application:start_type(), term()) -> {ok, pid()} | ignore | {error, term()}.
 start(_StartType, _StartArgs) ->
     case ensure_config_loaded() of
         ok ->
@@ -23,6 +25,11 @@ stop(_State) ->
 %% ASSUMPTION: ETS table existence is a sufficient check for config being loaded.
 %% If the table exists but is empty, we still skip — the caller is responsible
 %% for ensuring the table has valid data if they created it.
+%% ASSUMPTION: The ETS table created by loom_config:load/0 is owned by the
+%% calling process (the application master helper). This process lives for the
+%% entire application lifetime, so the table survives. If this changes (e.g.,
+%% config loading moves to a dedicated process), ETS ownership must be
+%% transferred or the table created with {heir, ...}.
 -spec ensure_config_loaded() -> ok | {error, term()}.
 ensure_config_loaded() ->
     case ets:info(loom_config) of
