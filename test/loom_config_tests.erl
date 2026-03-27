@@ -87,6 +87,77 @@ get_with_default_test() ->
     ?assertEqual(42, loom_config:get([nonexistent, key], 42)),
     cleanup_ets().
 
+%% --- Merge logic ---
+
+merge_defaults_override_hardcoded_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("full.json")),
+    {ok, E} = loom_config:get_engine(<<"test_engine">>),
+    Port = maps:get(port, E),
+    ?assertEqual(20000, maps:get(heartbeat_timeout_ms, Port)),
+    ?assertEqual(5000, maps:get(spawn_timeout_ms, Port)),
+    GpuMon = maps:get(gpu_monitor, E),
+    ?assertEqual(10000, maps:get(poll_interval_ms, GpuMon)),
+    Thresholds = maps:get(thresholds, GpuMon),
+    ?assertEqual(90.0, maps:get(temperature_c, Thresholds)),
+    ?assertEqual(95.0, maps:get(mem_percent, Thresholds)),
+    Coord = maps:get(coordinator, E),
+    ?assertEqual(128, maps:get(max_concurrent, Coord)),
+    ?assertEqual(120000, maps:get(startup_timeout_ms, Coord)),
+    Sup = maps:get(engine_sup, E),
+    ?assertEqual(10, maps:get(max_restarts, Sup)),
+    ?assertEqual(60, maps:get(max_period, Sup)),
+    cleanup_ets().
+
+merge_server_section_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("full.json")),
+    Server = loom_config:get_server(),
+    ?assertEqual(9090, maps:get(port, Server)),
+    ?assertEqual(2048, maps:get(max_connections, Server)),
+    ?assertEqual({0,0,0,0}, maps:get(ip, Server)),
+    cleanup_ets().
+
+per_engine_overrides_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("overrides.json")),
+    {ok, A} = loom_config:get_engine(<<"engine_a">>),
+    PortA = maps:get(port, A),
+    ?assertEqual(30000, maps:get(heartbeat_timeout_ms, PortA)),
+    CoordA = maps:get(coordinator, A),
+    ?assertEqual(256, maps:get(max_concurrent, CoordA)),
+    GpuMonA = maps:get(gpu_monitor, A),
+    ?assertEqual(2000, maps:get(poll_interval_ms, GpuMonA)),
+    ThresholdsA = maps:get(thresholds, GpuMonA),
+    ?assertEqual(80.0, maps:get(mem_percent, ThresholdsA)),
+    ?assertEqual(85.0, maps:get(temperature_c, ThresholdsA)),
+    {ok, B} = loom_config:get_engine(<<"engine_b">>),
+    PortB = maps:get(port, B),
+    ?assertEqual(20000, maps:get(heartbeat_timeout_ms, PortB)),
+    CoordB = maps:get(coordinator, B),
+    ?assertEqual(128, maps:get(max_concurrent, CoordB)),
+    cleanup_ets().
+
+engine_names_ordering_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("overrides.json")),
+    ?assertEqual([<<"engine_a">>, <<"engine_b">>], loom_config:engine_names()),
+    cleanup_ets().
+
+get_engine_not_found_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("minimal.json")),
+    ?assertEqual({error, not_found}, loom_config:get_engine(<<"nonexistent">>)),
+    cleanup_ets().
+
+get_nested_deep_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("full.json")),
+    ?assertEqual(9090, loom_config:get([server, port], 0)),
+    ?assertEqual(42, loom_config:get([server, nonexistent], 42)),
+    ?assertEqual(99, loom_config:get([totally, missing, path], 99)),
+    cleanup_ets().
+
 %% --- Helpers ---
 
 fixture_path(Name) ->
