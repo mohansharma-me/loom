@@ -70,6 +70,9 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(_Config) ->
+    %% ASSUMPTION: loom_sup starts loom_http_server (Cowboy listener) which
+    %% persists under ranch_sup. Stopping loom cleanly terminates all children.
+    catch application:stop(loom),
     ok.
 
 init_per_testcase(_TestCase, Config) ->

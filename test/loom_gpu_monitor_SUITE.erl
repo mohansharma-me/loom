@@ -69,13 +69,21 @@ all() ->
     ].
 
 init_per_suite(Config) ->
-    %% Pre-load config before starting loom so loom_app:start/2 skips
-    %% file-based loading (avoids CWD-dependent config resolution in test).
+    %% ASSUMPTION: GPU monitor tests need only loom_config ETS and the mock
+    %% backend. They do NOT need the full loom application (which would start
+    %% loom_sup -> loom_http_server -> Cowboy). Stop any leftover loom app
+    %% from a prior suite to avoid port conflicts.
+    catch application:stop(loom),
+    catch cowboy:stop_listener(loom_http_listener),
     ok = loom_config:load(fixture_path("minimal.json")),
-    {ok, _} = application:ensure_all_started(loom),
     Config.
 
 end_per_suite(_Config) ->
+    %% Clean up ETS if present
+    case ets:info(loom_config) of
+        undefined -> ok;
+        _ -> ets:delete(loom_config)
+    end,
     ok.
 
 init_per_testcase(_TestCase, Config) ->

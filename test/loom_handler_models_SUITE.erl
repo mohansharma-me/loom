@@ -8,12 +8,17 @@
 all() -> [models_list, models_no_engine].
 
 init_per_suite(Config) ->
-    %% Pre-load config before starting loom so loom_app:start/2 skips
-    %% file-based loading (avoids CWD-dependent config resolution in test).
+    %% ASSUMPTION: Handler tests need isolated control with a mock coordinator,
+    %% not the full loom application. Starting loom would launch loom_sup which
+    %% starts loom_http_server (Cowboy), causing an already_started error when
+    %% we call loom_http:start() below. Start only the dependencies we need.
     DataDir = ?config(data_dir, Config),
     ok = loom_config:load(filename:join(DataDir, "loom.json")),
-    {ok, _} = application:ensure_all_started(loom),
+    {ok, _} = application:ensure_all_started(cowboy),
     {ok, _} = application:ensure_all_started(gun),
+    %% Stop any leftover loom app / Cowboy listener from a prior suite
+    catch application:stop(loom),
+    catch cowboy:stop_listener(loom_http_listener),
     {ok, MockPid} = loom_mock_coordinator:start_link(#{engine_id => <<"engine_0">>}),
     {ok, _} = loom_http:start(),
     [{mock_pid, MockPid} | Config].
