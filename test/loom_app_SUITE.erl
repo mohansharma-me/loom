@@ -10,7 +10,8 @@
     http_config_reads_from_ets_test/1,
     http_server_lifecycle_test/1,
     app_start_fails_on_bad_config_test/1,
-    app_start_skips_reload_if_preloaded_test/1
+    app_start_skips_reload_if_preloaded_test/1,
+    supervisor_has_correct_children_test/1
 ]).
 
 all() ->
@@ -18,7 +19,8 @@ all() ->
         http_config_reads_from_ets_test,
         http_server_lifecycle_test,
         app_start_fails_on_bad_config_test,
-        app_start_skips_reload_if_preloaded_test
+        app_start_skips_reload_if_preloaded_test,
+        supervisor_has_correct_children_test
     ].
 
 init_per_suite(Config) ->
@@ -40,6 +42,8 @@ init_per_testcase(_TestCase, Config) ->
     Config.
 
 end_per_testcase(_TestCase, _Config) ->
+    %% Stop loom application if running (cleanup after integration tests)
+    catch application:stop(loom),
     %% Stop Cowboy listener if still running (cleanup after lifecycle test)
     catch cowboy:stop_listener(loom_http_listener),
     case ets:info(loom_config) of
@@ -114,8 +118,8 @@ app_start_skips_reload_if_preloaded_test(_Config) ->
     ServerBefore = loom_config:get_server(),
 
     %% Start the application — should NOT reload config
-    %% ASSUMPTION: loom_sup has no children yet (Task 4), so the app starts
-    %% but does nothing useful. We're just verifying config isn't reloaded.
+    %% ASSUMPTION: loom_sup starts children from the pre-loaded config.
+    %% We're verifying config isn't reloaded from disk.
     {ok, _} = application:ensure_all_started(loom),
 
     %% Server config should be unchanged (still our test config)
@@ -125,9 +129,42 @@ app_start_skips_reload_if_preloaded_test(_Config) ->
     %% Clean up
     application:stop(loom).
 
+%% @doc Full application starts with correct supervisor children.
+supervisor_has_correct_children_test(_Config) ->
+    ok = loom_config:load(test_config_path()),
+    {ok, _} = application:ensure_all_started(loom),
+
+    %% Wait for engine to reach ready
+    wait_engine_ready(<<"test_engine">>, 15000),
+
+    %% Check loom_sup children
+    Children = supervisor:which_children(loom_sup),
+
+    %% Should have: loom_http_server + 1 engine sup
+    ?assertEqual(2, length(Children)),
+
+    %% HTTP server child
+    ?assertNotEqual(false, lists:keyfind(loom_http_server, 1, Children)),
+
+    %% Engine supervisor child
+    ExpectedEngSup = loom_engine_sup:sup_name(<<"test_engine">>),
+    ?assertNotEqual(false, lists:keyfind(ExpectedEngSup, 1, Children)),
+
+    application:stop(loom).
+
 %%====================================================================
 %% Helpers
 %%====================================================================
+
+wait_engine_ready(EngineId, Timeout) when Timeout > 0 ->
+    case catch loom_engine_coordinator:get_status(EngineId) of
+        ready -> ok;
+        _ ->
+            timer:sleep(100),
+            wait_engine_ready(EngineId, Timeout - 100)
+    end;
+wait_engine_ready(EngineId, _Timeout) ->
+    ct:fail(io_lib:format("Engine ~s never reached ready", [EngineId])).
 
 test_config_path() ->
     %% ASSUMPTION: The test data dir is relative to the project root,

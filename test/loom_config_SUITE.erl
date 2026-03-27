@@ -88,7 +88,7 @@ concurrent_reads_test(_Config) ->
 
 reload_replaces_config_test(_Config) ->
     ok = loom_config:load(fixture_path("minimal.json")),
-    ?assertEqual([<<"test_engine">>], loom_config:engine_names()),
+    ?assertEqual([<<"fixture_engine">>], loom_config:engine_names()),
     Server1 = loom_config:get_server(),
     ?assertEqual(8080, maps:get(port, Server1)),
     ok = loom_config:load(fixture_path("full.json")),
@@ -104,7 +104,7 @@ ets_table_is_public_test(_Config) ->
         Self ! {result, Result}
     end),
     receive
-        {result, Names} -> ?assertEqual([<<"test_engine">>], Names)
+        {result, Names} -> ?assertEqual([<<"fixture_engine">>], Names)
     after 5000 -> ct:fail(timeout)
     end.
 
