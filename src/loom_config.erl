@@ -3,6 +3,7 @@
 %% Public API
 -export([load/0, load/1]).
 -export([get/2, get_engine/1, engine_names/0, get_server/0]).
+-export([resolve_adapter/1]).
 
 %% Defaults (exported for testing)
 -export([server_defaults/0, port_defaults/0, gpu_monitor_defaults/0,
@@ -122,9 +123,31 @@ get_server() ->
             end
     end.
 
+-spec resolve_adapter(map()) -> {ok, string()} | {error, term()}.
+resolve_adapter(#{adapter_cmd := Cmd}) when is_binary(Cmd), byte_size(Cmd) > 0 ->
+    {ok, binary_to_list(Cmd)};
+resolve_adapter(#{adapter_cmd := Cmd}) when is_list(Cmd), length(Cmd) > 0 ->
+    {ok, Cmd};
+resolve_adapter(#{backend := Backend}) ->
+    case adapter_filename(Backend) of
+        {ok, Filename} ->
+            {ok, filename:join([code:priv_dir(loom), "python", Filename])};
+        error ->
+            {error, {unknown_backend, Backend}}
+    end;
+resolve_adapter(_) ->
+    {error, {unknown_backend, undefined}}.
+
 %%% ===================================================================
 %%% Internal functions
 %%% ===================================================================
+
+-spec adapter_filename(binary()) -> {ok, string()} | error.
+adapter_filename(<<"vllm">>) -> {ok, "loom_adapter.py"};
+adapter_filename(<<"mlx">>) -> {ok, "loom_adapter_mlx.py"};
+adapter_filename(<<"tensorrt">>) -> {ok, "loom_adapter_trt.py"};
+adapter_filename(<<"mock">>) -> {ok, "loom_adapter_mock.py"};
+adapter_filename(_) -> error.
 
 -spec parse_and_store(binary()) -> ok | {error, term()}.
 parse_and_store(Bin) ->

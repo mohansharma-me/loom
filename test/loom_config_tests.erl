@@ -158,6 +158,42 @@ get_nested_deep_test() ->
     ?assertEqual(99, loom_config:get([totally, missing, path], 99)),
     cleanup_ets().
 
+%% --- Adapter resolution ---
+
+resolve_adapter_vllm_test() ->
+    Expected = filename:join([code:priv_dir(loom), "python", "loom_adapter.py"]),
+    ?assertEqual({ok, Expected},
+                 loom_config:resolve_adapter(#{backend => <<"vllm">>})).
+
+resolve_adapter_mlx_test() ->
+    Expected = filename:join([code:priv_dir(loom), "python", "loom_adapter_mlx.py"]),
+    ?assertEqual({ok, Expected},
+                 loom_config:resolve_adapter(#{backend => <<"mlx">>})).
+
+resolve_adapter_tensorrt_test() ->
+    Expected = filename:join([code:priv_dir(loom), "python", "loom_adapter_trt.py"]),
+    ?assertEqual({ok, Expected},
+                 loom_config:resolve_adapter(#{backend => <<"tensorrt">>})).
+
+resolve_adapter_custom_overrides_backend_test() ->
+    ?assertEqual({ok, "/custom/adapter.py"},
+                 loom_config:resolve_adapter(#{backend => <<"vllm">>,
+                                               adapter_cmd => <<"/custom/adapter.py">>})).
+
+resolve_adapter_mock_test() ->
+    Expected = filename:join([code:priv_dir(loom), "python", "loom_adapter_mock.py"]),
+    ?assertEqual({ok, Expected},
+                 loom_config:resolve_adapter(#{backend => <<"mock">>})).
+
+resolve_adapter_unknown_no_cmd_test() ->
+    ?assertEqual({error, {unknown_backend, <<"foo">>}},
+                 loom_config:resolve_adapter(#{backend => <<"foo">>})).
+
+resolve_adapter_unknown_with_cmd_test() ->
+    ?assertEqual({ok, "/my/custom.py"},
+                 loom_config:resolve_adapter(#{backend => <<"foo">>,
+                                               adapter_cmd => <<"/my/custom.py">>})).
+
 %% --- Helpers ---
 
 fixture_path(Name) ->
