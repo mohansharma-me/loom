@@ -6,3 +6,4 @@ erl_crash.dump
 rebar3.crashdump
 log/
 .rebar3/
+.worktrees/
