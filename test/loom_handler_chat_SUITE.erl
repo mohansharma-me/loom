@@ -20,11 +20,13 @@ all() -> [non_streaming_response, streaming_sse, bad_request, malformed_json,
           inactivity_timeout, client_disconnect].
 
 init_per_suite(Config) ->
+    %% Pre-load config before starting loom so loom_app:start/2 skips
+    %% file-based loading (avoids CWD-dependent config resolution in test).
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
     {ok, _} = application:ensure_all_started(loom),
     {ok, _} = application:ensure_all_started(gun),
     {ok, MockPid} = loom_mock_coordinator:start_link(#{engine_id => <<"engine_0">>}),
-    DataDir = ?config(data_dir, Config),
-    ok = loom_config:load(filename:join(DataDir, "loom.json")),
     {ok, _} = loom_http:start(),
     [{mock_pid, MockPid} | Config].
 

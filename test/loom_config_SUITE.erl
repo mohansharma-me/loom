@@ -23,6 +23,9 @@ all() ->
     ].
 
 init_per_suite(Config) ->
+    %% Pre-load config before starting loom so loom_app:start/2 skips
+    %% file-based loading (avoids CWD-dependent config resolution in test).
+    ok = loom_config:load(fixture_path("minimal.json")),
     {ok, _} = application:ensure_all_started(loom),
     Config.
 

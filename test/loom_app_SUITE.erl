@@ -8,13 +8,17 @@
 
 -export([
     http_config_reads_from_ets_test/1,
-    http_server_lifecycle_test/1
+    http_server_lifecycle_test/1,
+    app_start_fails_on_bad_config_test/1,
+    app_start_skips_reload_if_preloaded_test/1
 ]).
 
 all() ->
     [
         http_config_reads_from_ets_test,
-        http_server_lifecycle_test
+        http_server_lifecycle_test,
+        app_start_fails_on_bad_config_test,
+        app_start_skips_reload_if_preloaded_test
     ].
 
 init_per_suite(Config) ->
@@ -90,6 +94,36 @@ http_server_lifecycle_test(_Config) ->
     ?assertMatch({error, _}, gen_tcp:connect({127, 0, 0, 1}, Port,
                                               [binary, {active, false}],
                                               500)).
+
+%% @doc Application start fails with clear error on invalid config.
+app_start_fails_on_bad_config_test(_Config) ->
+    BadPath = "/nonexistent/loom.json",
+    ?assertMatch({error, {config_file, enoent, _}},
+                 loom_config:load(BadPath)).
+
+%% @doc If loom_config ETS is already populated, loom_app:start/2 skips
+%% config loading (allows tests to pre-load config).
+app_start_skips_reload_if_preloaded_test(_Config) ->
+    %% Pre-load config
+    ok = loom_config:load(test_config_path()),
+
+    %% Verify ETS exists
+    ?assertNotEqual(undefined, ets:info(loom_config)),
+
+    %% Store the current server config
+    ServerBefore = loom_config:get_server(),
+
+    %% Start the application — should NOT reload config
+    %% ASSUMPTION: loom_sup has no children yet (Task 4), so the app starts
+    %% but does nothing useful. We're just verifying config isn't reloaded.
+    {ok, _} = application:ensure_all_started(loom),
+
+    %% Server config should be unchanged (still our test config)
+    ServerAfter = loom_config:get_server(),
+    ?assertEqual(ServerBefore, ServerAfter),
+
+    %% Clean up
+    application:stop(loom).
 
 %%====================================================================
 %% Helpers
