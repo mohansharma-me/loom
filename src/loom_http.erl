@@ -4,8 +4,6 @@
 
 -include_lib("kernel/include/logger.hrl").
 
-%% NOTE: loom_http is started manually for now. Integration into loom_sup
-%% supervision tree is part of P0-11 (#12) — wiring all components together.
 
 -spec start() -> {ok, pid()} | {error, term()}.
 start() ->
