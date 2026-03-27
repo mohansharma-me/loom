@@ -19,6 +19,7 @@
 -export([
     start_link/1,
     generate/3,
+    generate/4,
     shutdown/1,
     stop/1
 ]).
@@ -181,6 +182,11 @@ start_link(Config) ->
 generate(Pid, Prompt, Params) ->
     gen_statem:call(Pid, {generate, Prompt, Params}).
 
+-spec generate(pid(), binary(), map(), timeout()) ->
+    {ok, binary()} | {error, not_ready | draining | overloaded | stopped}.
+generate(Pid, Prompt, Params, Timeout) ->
+    gen_statem:call(Pid, {generate, Prompt, Params}, Timeout).
+
 -spec shutdown(pid()) -> ok.
 shutdown(Pid) ->
     gen_statem:cast(Pid, do_shutdown).
@@ -260,6 +266,9 @@ init(Config) ->
                            maps:get(model, Config),
                            maps:get(backend, Config),
                            undefined, StartedAt}),
+    %% Store coordinator pid for lock-free lookup by HTTP handlers.
+    %% ASSUMPTION: self() here is the coordinator gen_statem process.
+    ets:insert(MetaTable, {coordinator_pid, self()}),
     Data = #data{
         engine_id      = EngineId,
         config         = Config,

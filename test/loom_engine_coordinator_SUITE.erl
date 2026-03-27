@@ -32,7 +32,9 @@
     self_heal_then_succeed_test/1,
     port_crash_during_drain_test/1,
     caller_death_test/1,
-    drain_timeout_test/1
+    drain_timeout_test/1,
+    coordinator_pid_in_ets/1,
+    generate_with_timeout/1
 ]).
 
 %%====================================================================
@@ -53,7 +55,9 @@ all() ->
         self_heal_then_succeed_test,
         port_crash_during_drain_test,
         caller_death_test,
-        drain_timeout_test
+        drain_timeout_test,
+        coordinator_pid_in_ets,
+        generate_with_timeout
     ].
 
 init_per_suite(Config) ->
@@ -491,6 +495,41 @@ drain_timeout_test(_Config) ->
     end,
     wait_status(EngineId, stopped, 5000),
     wait_dead(Pid, 5000).
+
+%% @doc Tests that the coordinator stores its own pid in the meta ETS table
+%% under the key `coordinator_pid', allowing HTTP handlers to do a lock-free
+%% ETS lookup instead of going through a GenServer message.
+coordinator_pid_in_ets(Config) ->
+    CoordConfig = default_config(),
+    {ok, Pid} = loom_engine_coordinator:start_link(CoordConfig),
+    EngineId = maps:get(engine_id, CoordConfig),
+    MetaTable = loom_engine_coordinator:meta_table_name(EngineId),
+    [{coordinator_pid, StoredPid}] = ets:lookup(MetaTable, coordinator_pid),
+    ?assertEqual(Pid, StoredPid),
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000),
+    _ = Config,
+    ok.
+
+%% @doc Tests that generate/4 accepts an explicit timeout parameter and behaves
+%% identically to generate/3 but uses the provided timeout for the call.
+generate_with_timeout(Config) ->
+    CoordConfig = default_config(),
+    {ok, Pid} = loom_engine_coordinator:start_link(CoordConfig),
+    EngineId = maps:get(engine_id, CoordConfig),
+    wait_status(EngineId, ready, 5000),
+    {ok, RequestId} = loom_engine_coordinator:generate(Pid, <<"test">>, #{}, 5000),
+    ?assert(is_binary(RequestId)),
+    collect_tokens(RequestId, 5, 5000),
+    receive
+        {loom_done, RequestId, _} -> ok
+    after 5000 ->
+        ct:fail("no done")
+    end,
+    loom_engine_coordinator:stop(Pid),
+    wait_dead(Pid, 5000),
+    _ = Config,
+    ok.
 
 %%====================================================================
 %% Helpers
