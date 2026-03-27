@@ -1,5 +1,13 @@
 -module(loom_config).
 
+-type config_path() :: [atom()].
+-type validation_error() ::
+    {config_file, atom(), file:filename()} |
+    {json_parse, term()} |
+    {validation, term()}.
+
+-export_type([config_path/0, validation_error/0]).
+
 %% Public API
 -export([load/0, load/1]).
 -export([get/2, get_engine/1, engine_names/0, get_server/0]).
@@ -307,7 +315,7 @@ do_store(Config) ->
     ets:insert(?TABLE, {{config, parsed}, Config}),
     %% Store server config (merged with defaults)
     ServerSection = maps:get(server, Config, #{}),
-    MergedServer = deep_merge(server_defaults(), ServerSection),
+    MergedServer = parse_server_ip(deep_merge(server_defaults(), ServerSection)),
     ets:insert(?TABLE, {{server, config}, MergedServer}),
     %% Store per-engine configs
     Engines = maps:get(engines, Config, []),
@@ -373,6 +381,17 @@ merge_engine(EngineMap, DefaultsSection) ->
         engine_id => Name,
         adapter_cmd => AdapterCmd
     }.
+
+%% ASSUMPTION: If the IP string is invalid, we silently keep the original binary
+%% rather than crashing. This lets validation catch it later if needed.
+-spec parse_server_ip(map()) -> map().
+parse_server_ip(#{ip := Ip} = Server) when is_binary(Ip) ->
+    case inet:parse_address(binary_to_list(Ip)) of
+        {ok, Addr} -> Server#{ip => Addr};
+        {error, _} -> Server
+    end;
+parse_server_ip(Server) ->
+    Server.
 
 -spec deep_merge(map(), map()) -> map().
 deep_merge(Base, Override) when is_map(Base), is_map(Override) ->
