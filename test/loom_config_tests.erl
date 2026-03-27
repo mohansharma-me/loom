@@ -268,6 +268,34 @@ validate_invalid_timeout_type_test() ->
     file:delete(Path),
     cleanup_ets().
 
+%% --- Adapter integrated into engine config ---
+
+engine_config_has_adapter_cmd_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("minimal.json")),
+    {ok, E} = loom_config:get_engine(<<"test_engine">>),
+    AdapterCmd = maps:get(adapter_cmd, E),
+    ?assert(is_list(AdapterCmd)),
+    ?assertNotEqual(nomatch, string:find(AdapterCmd, "loom_adapter_mock.py")),
+    cleanup_ets().
+
+engine_config_custom_adapter_cmd_test() ->
+    cleanup_ets(),
+    Json = <<"{\"engines\": [{\"name\": \"e1\", \"backend\": \"custom\", \"model\": \"m\", \"adapter_cmd\": \"/bin/true\"}]}">>,
+    Path = write_temp_file(Json),
+    ok = loom_config:load(Path),
+    {ok, E} = loom_config:get_engine(<<"e1">>),
+    ?assertEqual("/bin/true", maps:get(adapter_cmd, E)),
+    file:delete(Path),
+    cleanup_ets().
+
+engine_config_has_engine_id_test() ->
+    cleanup_ets(),
+    ok = loom_config:load(fixture_path("minimal.json")),
+    {ok, E} = loom_config:get_engine(<<"test_engine">>),
+    ?assertEqual(<<"test_engine">>, maps:get(engine_id, E)),
+    cleanup_ets().
+
 %% --- Adapter resolution ---
 
 resolve_adapter_vllm_test() ->

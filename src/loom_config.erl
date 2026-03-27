@@ -361,12 +361,17 @@ merge_engine(EngineMap, DefaultsSection) ->
     Name = maps:get(name, EngineMap),
     Backend = maps:get(backend, EngineMap),
     Model = maps:get(model, EngineMap),
+    %% ASSUMPTION: resolve_adapter/1 is safe here because validation has already
+    %% rejected unknown backends without adapter_cmd.
+    {ok, AdapterCmd} = resolve_adapter(EngineMap),
     BaseMerged#{
         name => Name,
         backend => Backend,
         model => Model,
         gpu_ids => GpuIds,
-        tp_size => TpSize
+        tp_size => TpSize,
+        engine_id => Name,
+        adapter_cmd => AdapterCmd
     }.
 
 -spec deep_merge(map(), map()) -> map().
