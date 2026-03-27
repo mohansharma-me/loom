@@ -149,6 +149,137 @@ adapter_filename(<<"tensorrt">>) -> {ok, "loom_adapter_trt.py"};
 adapter_filename(<<"mock">>) -> {ok, "loom_adapter_mock.py"};
 adapter_filename(_) -> error.
 
+%%% ===================================================================
+%%% Validation
+%%% ===================================================================
+
+-spec validate(map()) -> ok | {error, term()}.
+validate(Config) ->
+    case validate_engines_present(Config) of
+        ok ->
+            Engines = maps:get(engines, Config),
+            case validate_engines(Engines, []) of
+                ok -> validate_defaults(Config);
+                Err -> Err
+            end;
+        Err -> Err
+    end.
+
+-spec validate_engines_present(map()) -> ok | {error, term()}.
+validate_engines_present(#{engines := Engines}) when is_list(Engines), length(Engines) > 0 -> ok;
+validate_engines_present(#{engines := []}) -> {error, {validation, {empty_engines}}};
+validate_engines_present(#{engines := _}) -> {error, {validation, {invalid_type, engines, expected_list}}};
+validate_engines_present(_) -> {error, {validation, {missing_field, root, engines}}}.
+
+-spec validate_engines(list(map()), [binary()]) -> ok | {error, term()}.
+validate_engines([], _Seen) -> ok;
+validate_engines([Engine | Rest], Seen) ->
+    case validate_single_engine(Engine, Seen) of
+        {ok, Name} -> validate_engines(Rest, [Name | Seen]);
+        {error, _} = Err -> Err
+    end.
+
+-spec validate_single_engine(map(), [binary()]) -> {ok, binary()} | {error, term()}.
+validate_single_engine(Engine, Seen) ->
+    case validate_required_engine_fields(Engine) of
+        {ok, Name} ->
+            case lists:member(Name, Seen) of
+                true -> {error, {validation, {duplicate_engine, Name}}};
+                false ->
+                    case validate_engine_name_format(Name) of
+                        ok ->
+                            case validate_engine_backend(Engine, Name) of
+                                ok -> validate_engine_optional_fields(Engine, Name);
+                                Err -> Err
+                            end;
+                        Err -> Err
+                    end
+            end;
+        Err -> Err
+    end.
+
+-spec validate_required_engine_fields(map()) -> {ok, binary()} | {error, term()}.
+validate_required_engine_fields(Engine) ->
+    case maps:find(name, Engine) of
+        {ok, Name} when is_binary(Name) ->
+            case maps:find(backend, Engine) of
+                {ok, _} ->
+                    case maps:find(model, Engine) of
+                        {ok, _} -> {ok, Name};
+                        error -> {error, {validation, {missing_field, engine, model}}}
+                    end;
+                error -> {error, {validation, {missing_field, engine, backend}}}
+            end;
+        error -> {error, {validation, {missing_field, engine, name}}}
+    end.
+
+-spec validate_engine_name_format(binary()) -> ok | {error, term()}.
+validate_engine_name_format(Name) ->
+    case re:run(Name, <<"^[a-zA-Z0-9._-]+$">>) of
+        {match, _} when byte_size(Name) =< 64 -> ok;
+        _ -> {error, {validation, {invalid_engine_name, Name}}}
+    end.
+
+-spec validate_engine_backend(map(), binary()) -> ok | {error, term()}.
+validate_engine_backend(#{adapter_cmd := Cmd}, _Name) when is_binary(Cmd), byte_size(Cmd) > 0 -> ok;
+validate_engine_backend(#{backend := Backend}, Name) ->
+    case adapter_filename(Backend) of
+        {ok, _} -> ok;
+        error -> {error, {validation, {unknown_backend, Backend, engine, Name}}}
+    end.
+
+-spec validate_engine_optional_fields(map(), binary()) -> {ok, binary()} | {error, term()}.
+validate_engine_optional_fields(Engine, Name) ->
+    case maps:find(gpu_ids, Engine) of
+        {ok, GpuIds} when not is_list(GpuIds) ->
+            {error, {validation, {invalid_type, gpu_ids, expected_list}}};
+        _ -> {ok, Name}
+    end.
+
+-spec validate_defaults(map()) -> ok | {error, term()}.
+validate_defaults(#{defaults := Defaults}) when is_map(Defaults) ->
+    validate_defaults_sections(Defaults);
+validate_defaults(_) -> ok.
+
+-spec validate_defaults_sections(map()) -> ok | {error, term()}.
+validate_defaults_sections(Defaults) ->
+    Sections = [
+        {coordinator, [startup_timeout_ms, drain_timeout_ms, max_concurrent]},
+        {port, [max_line_length, spawn_timeout_ms, heartbeat_timeout_ms,
+                shutdown_timeout_ms, post_close_timeout_ms]},
+        {gpu_monitor, [poll_interval_ms, poll_timeout_ms]},
+        {engine_sup, [max_restarts, max_period]}
+    ],
+    validate_sections(Defaults, Sections).
+
+-spec validate_sections(map(), [{atom(), [atom()]}]) -> ok | {error, term()}.
+validate_sections(_Defaults, []) -> ok;
+validate_sections(Defaults, [{Section, Fields} | Rest]) ->
+    case maps:find(Section, Defaults) of
+        {ok, SectionMap} when is_map(SectionMap) ->
+            case validate_positive_integer_fields(SectionMap, Fields) of
+                ok -> validate_sections(Defaults, Rest);
+                Err -> Err
+            end;
+        _ -> validate_sections(Defaults, Rest)
+    end.
+
+-spec validate_positive_integer_fields(map(), [atom()]) -> ok | {error, term()}.
+validate_positive_integer_fields(_Map, []) -> ok;
+validate_positive_integer_fields(Map, [Field | Rest]) ->
+    case maps:find(Field, Map) of
+        {ok, V} when is_integer(V), V > 0 ->
+            validate_positive_integer_fields(Map, Rest);
+        {ok, _} ->
+            {error, {validation, {invalid_type, Field, expected_positive_integer}}};
+        error ->
+            validate_positive_integer_fields(Map, Rest)
+    end.
+
+%%% ===================================================================
+%%% Parsing and storage
+%%% ===================================================================
+
 -spec parse_and_store(binary()) -> ok | {error, term()}.
 parse_and_store(Bin) ->
     try json:decode(Bin) of
@@ -161,9 +292,16 @@ parse_and_store(Bin) ->
             {error, {json_parse, Reason}}
     end.
 
--spec store_config(map()) -> ok.
+-spec store_config(map()) -> ok | {error, term()}.
 store_config(RawConfig) ->
     Config = atomize_keys(RawConfig),
+    case validate(Config) of
+        ok -> do_store(Config);
+        {error, _} = Err -> Err
+    end.
+
+-spec do_store(map()) -> ok.
+do_store(Config) ->
     ensure_table(),
     %% Store full parsed config for get/2
     ets:insert(?TABLE, {{config, parsed}, Config}),

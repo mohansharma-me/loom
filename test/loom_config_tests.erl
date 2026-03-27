@@ -158,6 +158,116 @@ get_nested_deep_test() ->
     ?assertEqual(99, loom_config:get([totally, missing, path], 99)),
     cleanup_ets().
 
+%% --- Validation ---
+
+validate_missing_engines_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{}">>),
+    ?assertMatch({error, {validation, {missing_field, root, engines}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_engines_empty_list_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": []}">>),
+    ?assertMatch({error, {validation, {empty_engines}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_engines_not_list_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": \"not a list\"}">>),
+    ?assertMatch({error, {validation, {invalid_type, engines, expected_list}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_engine_missing_name_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"backend\": \"mock\", \"model\": \"m\"}]}">>),
+    ?assertMatch({error, {validation, {missing_field, engine, name}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_engine_missing_backend_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"e\", \"model\": \"m\"}]}">>),
+    ?assertMatch({error, {validation, {missing_field, engine, backend}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_engine_missing_model_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\"}]}">>),
+    ?assertMatch({error, {validation, {missing_field, engine, model}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_engine_invalid_name_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"bad name!\", \"backend\": \"mock\", \"model\": \"m\"}]}">>),
+    ?assertMatch({error, {validation, {invalid_engine_name, _}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_engine_name_with_hyphens_and_dots_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"qwen2.5-1.5b\", \"backend\": \"mock\", \"model\": \"m\"}]}">>),
+    ?assertEqual(ok, loom_config:load(Path)),
+    ?assertEqual([<<"qwen2.5-1.5b">>], loom_config:engine_names()),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_duplicate_engine_names_test() ->
+    cleanup_ets(),
+    Json = <<"{\"engines\": [
+        {\"name\": \"e1\", \"backend\": \"mock\", \"model\": \"m\"},
+        {\"name\": \"e1\", \"backend\": \"mock\", \"model\": \"m2\"}
+    ]}">>,
+    Path = write_temp_file(Json),
+    ?assertMatch({error, {validation, {duplicate_engine, <<"e1">>}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_unknown_backend_no_adapter_cmd_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"e1\", \"backend\": \"unknown_thing\", \"model\": \"m\"}]}">>),
+    ?assertMatch({error, {validation, {unknown_backend, _, engine, _}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_unknown_backend_with_adapter_cmd_test() ->
+    cleanup_ets(),
+    Json = <<"{\"engines\": [{\"name\": \"e1\", \"backend\": \"custom\", \"model\": \"m\", \"adapter_cmd\": \"/bin/true\"}]}">>,
+    Path = write_temp_file(Json),
+    ?assertEqual(ok, loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_invalid_gpu_ids_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\", \"model\": \"m\", \"gpu_ids\": \"not_a_list\"}]}">>),
+    ?assertMatch({error, {validation, {invalid_type, gpu_ids, expected_list}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_invalid_timeout_type_test() ->
+    cleanup_ets(),
+    Json = <<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\", \"model\": \"m\"}], \"defaults\": {\"coordinator\": {\"max_concurrent\": \"not_int\"}}}">>,
+    Path = write_temp_file(Json),
+    ?assertMatch({error, {validation, _}}, loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
 %% --- Adapter resolution ---
 
 resolve_adapter_vllm_test() ->
