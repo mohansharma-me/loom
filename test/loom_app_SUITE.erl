@@ -7,15 +7,21 @@
 -export([init_per_testcase/2, end_per_testcase/2]).
 
 -export([
-    http_config_reads_from_ets_test/1
+    http_config_reads_from_ets_test/1,
+    http_server_lifecycle_test/1
 ]).
 
 all() ->
     [
-        http_config_reads_from_ets_test
+        http_config_reads_from_ets_test,
+        http_server_lifecycle_test
     ].
 
 init_per_suite(Config) ->
+    %% ASSUMPTION: We start cowboy (and its deps ranch, crypto) here so
+    %% ranch_sup is available for loom_http_server lifecycle tests.
+    %% We do NOT start the full loom application to keep tests isolated.
+    {ok, _} = application:ensure_all_started(cowboy),
     Config.
 
 end_per_suite(_Config) ->
@@ -30,6 +36,8 @@ init_per_testcase(_TestCase, Config) ->
     Config.
 
 end_per_testcase(_TestCase, _Config) ->
+    %% Stop Cowboy listener if still running (cleanup after lifecycle test)
+    catch cowboy:stop_listener(loom_http_listener),
     case ets:info(loom_config) of
         undefined -> ok;
         _ -> ets:delete(loom_config)
@@ -59,6 +67,29 @@ http_config_reads_from_ets_test(_Config) ->
 
     %% engine_id defaults to first engine name
     ?assertEqual(<<"test_engine">>, maps:get(engine_id, HttpConfig)).
+
+%% @doc loom_http_server starts Cowboy and stops it on terminate.
+http_server_lifecycle_test(_Config) ->
+    %% Load config with a test port to avoid conflicts
+    ok = loom_config:load(test_config_path()),
+
+    %% Start the server
+    {ok, Pid} = loom_http_server:start_link(),
+    ?assert(is_process_alive(Pid)),
+
+    %% Verify Cowboy is listening
+    Port = maps:get(port, loom_config:get_server()),
+    {ok, Conn} = gen_tcp:connect({127, 0, 0, 1}, Port, [binary, {active, false}]),
+    gen_tcp:close(Conn),
+
+    %% Stop the server
+    gen_server:stop(Pid),
+    timer:sleep(100),
+
+    %% Verify Cowboy is no longer listening
+    ?assertMatch({error, _}, gen_tcp:connect({127, 0, 0, 1}, Port,
+                                              [binary, {active, false}],
+                                              500)).
 
 %%====================================================================
 %% Helpers
