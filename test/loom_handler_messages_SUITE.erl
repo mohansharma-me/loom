@@ -18,7 +18,8 @@ init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(loom),
     {ok, _} = application:ensure_all_started(gun),
     {ok, MockPid} = loom_mock_coordinator:start_link(#{engine_id => <<"engine_0">>}),
-    application:set_env(loom, http, #{port => 18084, engine_id => <<"engine_0">>}),
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
     {ok, _} = loom_http:start(),
     [{mock_pid, MockPid} | Config].
 
@@ -28,6 +29,10 @@ end_per_suite(Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
+    %% ASSUMPTION: CT runs init_per_suite in a temporary process whose death
+    %% destroys ETS tables it created. Reload config each test case.
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
     MockPid = ?config(mock_pid, Config),
     loom_mock_coordinator:set_behavior(MockPid, #{
         tokens => [<<"Hello">>, <<" ">>, <<"world">>],

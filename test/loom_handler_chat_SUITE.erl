@@ -23,7 +23,8 @@ init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(loom),
     {ok, _} = application:ensure_all_started(gun),
     {ok, MockPid} = loom_mock_coordinator:start_link(#{engine_id => <<"engine_0">>}),
-    application:set_env(loom, http, #{port => 18083, engine_id => <<"engine_0">>}),
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
     {ok, _} = loom_http:start(),
     [{mock_pid, MockPid} | Config].
 
@@ -33,6 +34,11 @@ end_per_suite(Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
+    %% ASSUMPTION: CT runs init_per_suite in a temporary process whose death
+    %% destroys ETS tables it created. Reload config each test case to ensure
+    %% the loom_config ETS table exists for tests that manipulate it directly.
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
     MockPid = ?config(mock_pid, Config),
     loom_mock_coordinator:set_behavior(MockPid, #{
         tokens => [<<"Hello">>, <<" ">>, <<"world">>],
@@ -110,7 +116,8 @@ engine_overloaded(Config) ->
     gun:close(ConnPid).
 
 engine_unavailable(_Config) ->
-    application:set_env(loom, http, #{port => 18083, engine_id => <<"nonexistent">>}),
+    %% Temporarily override engine names in ETS to simulate nonexistent engine
+    ets:insert(loom_config, {{engine, names}, [<<"nonexistent">>]}),
     {ok, ConnPid} = gun:open("127.0.0.1", 18083),
     {ok, _} = gun:await_up(ConnPid),
     Body = loom_json:encode(#{
@@ -120,7 +127,8 @@ engine_unavailable(_Config) ->
     StreamRef = gun:post(ConnPid, "/v1/chat/completions",
         [{<<"content-type">>, <<"application/json">>}], Body),
     {response, nofin, 503, _} = gun:await(ConnPid, StreamRef),
-    application:set_env(loom, http, #{port => 18083, engine_id => <<"engine_0">>}),
+    %% Restore engine names
+    ets:insert(loom_config, {{engine, names}, [<<"engine_0">>]}),
     gun:close(ConnPid).
 
 malformed_json(_Config) ->
@@ -163,8 +171,10 @@ inactivity_timeout(Config) ->
         token_delay => 3000,  %% 3s between tokens
         error => undefined
     }),
-    application:set_env(loom, http, #{port => 18083, engine_id => <<"engine_0">>,
-                                      inactivity_timeout => 500}),  %% 500ms timeout
+    %% Temporarily override server config in ETS with short inactivity_timeout
+    [{_, OrigServerConfig}] = ets:lookup(loom_config, {server, config}),
+    ets:insert(loom_config, {{server, config},
+        OrigServerConfig#{inactivity_timeout => 500}}),
     {ok, ConnPid} = gun:open("127.0.0.1", 18083),
     {ok, _} = gun:await_up(ConnPid),
     Body = loom_json:encode(#{
@@ -175,8 +185,8 @@ inactivity_timeout(Config) ->
     StreamRef = gun:post(ConnPid, "/v1/chat/completions",
         [{<<"content-type">>, <<"application/json">>}], Body),
     {response, nofin, 504, _} = gun:await(ConnPid, StreamRef, 10000),
-    %% Restore config
-    application:set_env(loom, http, #{port => 18083, engine_id => <<"engine_0">>}),
+    %% Restore server config
+    ets:insert(loom_config, {{server, config}, OrigServerConfig}),
     gun:close(ConnPid).
 
 client_disconnect(Config) ->

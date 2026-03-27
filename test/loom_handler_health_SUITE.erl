@@ -2,7 +2,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([health_ready/1, health_no_engine/1]).
 
 all() -> [health_ready, health_no_engine].
@@ -11,7 +11,8 @@ init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(loom),
     {ok, _} = application:ensure_all_started(gun),
     {ok, MockPid} = loom_mock_coordinator:start_link(#{engine_id => <<"engine_0">>}),
-    application:set_env(loom, http, #{port => 18081, engine_id => <<"engine_0">>}),
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
     {ok, _} = loom_http:start(),
     [{mock_pid, MockPid} | Config].
 
@@ -19,6 +20,15 @@ end_per_suite(Config) ->
     catch loom_http:stop(),
     catch loom_mock_coordinator:stop(?config(mock_pid, Config)),
     ok.
+
+init_per_testcase(_TC, Config) ->
+    %% ASSUMPTION: CT runs init_per_suite in a temporary process whose death
+    %% destroys ETS tables it created. Reload config each test case.
+    DataDir = ?config(data_dir, Config),
+    ok = loom_config:load(filename:join(DataDir, "loom.json")),
+    Config.
+
+end_per_testcase(_TC, _Config) -> ok.
 
 health_ready(_Config) ->
     {ok, ConnPid} = gun:open("127.0.0.1", 18081),
@@ -31,8 +41,8 @@ health_ready(_Config) ->
     gun:close(ConnPid).
 
 health_no_engine(_Config) ->
-    %% Use a nonexistent engine_id
-    application:set_env(loom, http, #{port => 18081, engine_id => <<"nonexistent">>}),
+    %% Temporarily override engine names in ETS to simulate nonexistent engine
+    ets:insert(loom_config, {{engine, names}, [<<"nonexistent">>]}),
     {ok, ConnPid} = gun:open("127.0.0.1", 18081),
     {ok, _} = gun:await_up(ConnPid),
     StreamRef = gun:get(ConnPid, "/health"),
@@ -40,6 +50,6 @@ health_no_engine(_Config) ->
     {ok, Body} = gun:await_body(ConnPid, StreamRef),
     Decoded = loom_json:decode(Body),
     ?assertEqual(<<"stopped">>, maps:get(<<"status">>, Decoded)),
-    %% Restore config
-    application:set_env(loom, http, #{port => 18081, engine_id => <<"engine_0">>}),
+    %% Restore engine names
+    ets:insert(loom_config, {{engine, names}, [<<"engine_0">>]}),
     gun:close(ConnPid).

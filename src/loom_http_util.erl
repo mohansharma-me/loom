@@ -27,22 +27,26 @@ generate_request_id() ->
 unix_timestamp() ->
     erlang:system_time(second).
 
+%% ASSUMPTION: default_config/0 now only carries handler-specific defaults
+%% (timeouts, body size). Server settings (port, ip, max_connections) come from
+%% loom_config:get_server/0, which merges its own hardcoded defaults.
 -spec default_config() -> map().
 default_config() ->
     #{
-        port => 8080,
-        ip => {0, 0, 0, 0},
-        max_connections => 1024,
         max_body_size => 10485760,
         inactivity_timeout => 60000,
-        generate_timeout => 5000,
-        engine_id => <<"engine_0">>
+        generate_timeout => 5000
     }.
 
 -spec get_config() -> map().
 get_config() ->
-    UserConfig = application:get_env(loom, http, #{}),
-    maps:merge(default_config(), UserConfig).
+    ServerConfig = loom_config:get_server(),
+    EngineId = case loom_config:engine_names() of
+        [First | _] -> First;
+        [] -> <<"engine_0">>
+    end,
+    HandlerDefaults = default_config(),
+    maps:merge(HandlerDefaults, ServerConfig#{engine_id => EngineId}).
 
 -spec json_response(non_neg_integer(), map() | binary(), cowboy_req:req()) ->
     cowboy_req:req().
