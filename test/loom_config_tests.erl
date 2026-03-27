@@ -1,6 +1,8 @@
 -module(loom_config_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+-define(TABLE, loom_config).
+
 %% --- Hardcoded defaults ---
 
 server_defaults_test() ->
@@ -39,3 +41,69 @@ engine_sup_defaults_test() ->
     Defaults = loom_config:engine_sup_defaults(),
     ?assertEqual(5, maps:get(max_restarts, Defaults)),
     ?assertEqual(60, maps:get(max_period, Defaults)).
+
+%% --- JSON parsing tests ---
+
+load_minimal_config_test() ->
+    cleanup_ets(),
+    Path = fixture_path("minimal.json"),
+    ?assertEqual(ok, loom_config:load(Path)),
+    ?assertNotEqual(undefined, ets:info(?TABLE)),
+    cleanup_ets().
+
+load_file_not_found_test() ->
+    cleanup_ets(),
+    ?assertMatch({error, {config_file, enoent, _}},
+                 loom_config:load("/nonexistent/path.json")),
+    cleanup_ets().
+
+load_invalid_json_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{ not valid json">>),
+    ?assertMatch({error, {json_parse, _}}, loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+get_engine_names_test() ->
+    cleanup_ets(),
+    Path = fixture_path("minimal.json"),
+    ok = loom_config:load(Path),
+    ?assertEqual([<<"test_engine">>], loom_config:engine_names()),
+    cleanup_ets().
+
+get_server_defaults_when_no_server_section_test() ->
+    cleanup_ets(),
+    Path = fixture_path("minimal.json"),
+    ok = loom_config:load(Path),
+    Server = loom_config:get_server(),
+    ?assertEqual(8080, maps:get(port, Server)),
+    ?assertEqual({0,0,0,0}, maps:get(ip, Server)),
+    cleanup_ets().
+
+get_with_default_test() ->
+    cleanup_ets(),
+    Path = fixture_path("minimal.json"),
+    ok = loom_config:load(Path),
+    ?assertEqual(42, loom_config:get([nonexistent, key], 42)),
+    cleanup_ets().
+
+%% --- Helpers ---
+
+fixture_path(Name) ->
+    %% ASSUMPTION: ?FILE resolves to the test source file path at compile time,
+    %% so we navigate from the test directory to fixtures/.
+    TestDir = filename:dirname(?FILE),
+    filename:join([TestDir, "fixtures", Name]).
+
+write_temp_file(Content) ->
+    Path = filename:join(["/tmp", "loom_config_test_" ++
+                          integer_to_list(erlang:unique_integer([positive]))
+                          ++ ".json"]),
+    ok = file:write_file(Path, Content),
+    Path.
+
+cleanup_ets() ->
+    case ets:info(?TABLE) of
+        undefined -> ok;
+        _ -> ets:delete(?TABLE)
+    end.

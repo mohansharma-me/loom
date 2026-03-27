@@ -52,7 +52,7 @@ engine_sup_defaults() ->
       max_period => 60}.
 
 %%% ===================================================================
-%%% Public API (stubs)
+%%% Public API
 %%% ===================================================================
 
 -spec load() -> ok | {error, term()}.
@@ -60,21 +60,188 @@ load() ->
     load(?DEFAULT_PATH).
 
 -spec load(file:filename()) -> ok | {error, term()}.
-load(_Path) ->
-    {error, not_implemented}.
+load(Path) ->
+    case file:read_file(Path) of
+        {ok, Bin} ->
+            parse_and_store(Bin);
+        {error, enoent} ->
+            {error, {config_file, enoent, Path}};
+        {error, Reason} ->
+            {error, {config_file, Reason, Path}}
+    end.
 
 -spec get(list(atom()), term()) -> term().
-get(_KeyPath, Default) ->
-    Default.
+get(KeyPath, Default) ->
+    case ets:info(?TABLE) of
+        undefined ->
+            Default;
+        _ ->
+            case ets:lookup(?TABLE, {config, parsed}) of
+                [{{config, parsed}, Config}] ->
+                    get_nested(KeyPath, Config, Default);
+                [] ->
+                    Default
+            end
+    end.
 
 -spec get_engine(binary()) -> {ok, map()} | {error, not_found}.
-get_engine(_Name) ->
-    {error, not_found}.
+get_engine(Name) ->
+    case ets:info(?TABLE) of
+        undefined ->
+            {error, not_found};
+        _ ->
+            case ets:lookup(?TABLE, {engine, Name}) of
+                [{{engine, _}, EngineMap}] ->
+                    {ok, EngineMap};
+                [] ->
+                    {error, not_found}
+            end
+    end.
 
 -spec engine_names() -> [binary()].
 engine_names() ->
-    [].
+    case ets:info(?TABLE) of
+        undefined ->
+            [];
+        _ ->
+            case ets:lookup(?TABLE, {engine, names}) of
+                [{{engine, names}, Names}] -> Names;
+                [] -> []
+            end
+    end.
 
 -spec get_server() -> map().
 get_server() ->
-    server_defaults().
+    case ets:info(?TABLE) of
+        undefined ->
+            server_defaults();
+        _ ->
+            case ets:lookup(?TABLE, {server, config}) of
+                [{{server, config}, ServerMap}] -> ServerMap;
+                [] -> server_defaults()
+            end
+    end.
+
+%%% ===================================================================
+%%% Internal functions
+%%% ===================================================================
+
+-spec parse_and_store(binary()) -> ok | {error, term()}.
+parse_and_store(Bin) ->
+    try json:decode(Bin) of
+        Parsed when is_map(Parsed) ->
+            store_config(Parsed);
+        Other ->
+            {error, {json_parse, {expected_object, Other}}}
+    catch
+        error:Reason ->
+            {error, {json_parse, Reason}}
+    end.
+
+-spec store_config(map()) -> ok.
+store_config(RawConfig) ->
+    Config = atomize_keys(RawConfig),
+    ensure_table(),
+    %% Store full parsed config for get/2
+    ets:insert(?TABLE, {{config, parsed}, Config}),
+    %% Store server config (merged with defaults)
+    ServerSection = maps:get(server, Config, #{}),
+    MergedServer = deep_merge(server_defaults(), ServerSection),
+    ets:insert(?TABLE, {{server, config}, MergedServer}),
+    %% Store per-engine configs
+    Engines = maps:get(engines, Config, []),
+    DefaultsSection = maps:get(defaults, Config, #{}),
+    Names = store_engines(Engines, DefaultsSection),
+    ets:insert(?TABLE, {{engine, names}, Names}),
+    ok.
+
+-spec ensure_table() -> ok.
+ensure_table() ->
+    case ets:info(?TABLE) of
+        undefined ->
+            ?TABLE = ets:new(?TABLE, [set, named_table, public,
+                                      {read_concurrency, true}]),
+            ok;
+        _ ->
+            ets:delete_all_objects(?TABLE),
+            ok
+    end.
+
+-spec store_engines(list(map()), map()) -> [binary()].
+store_engines(Engines, DefaultsSection) ->
+    lists:map(fun(Engine) ->
+        Name = maps:get(name, Engine),
+        Merged = merge_engine(Engine, DefaultsSection),
+        ets:insert(?TABLE, {{engine, Name}, Merged}),
+        Name
+    end, Engines).
+
+-spec merge_engine(map(), map()) -> map().
+merge_engine(EngineMap, DefaultsSection) ->
+    %% ASSUMPTION: Merge priority is per-engine > defaults section > hardcoded defaults.
+    %% Sub-sections: port, gpu_monitor, coordinator, engine_sup.
+    Sections = [
+        {port, fun port_defaults/0},
+        {gpu_monitor, fun gpu_monitor_defaults/0},
+        {coordinator, fun coordinator_defaults/0},
+        {engine_sup, fun engine_sup_defaults/0}
+    ],
+    BaseMerged = lists:foldl(fun({Key, DefaultsFun}, Acc) ->
+        Hardcoded = DefaultsFun(),
+        FromDefaults = maps:get(Key, DefaultsSection, #{}),
+        FromEngine = maps:get(Key, EngineMap, #{}),
+        %% deep_merge(hardcoded, deep_merge(defaults, per_engine))
+        Merged = deep_merge(Hardcoded, deep_merge(FromDefaults, FromEngine)),
+        maps:put(Key, Merged, Acc)
+    end, #{}, Sections),
+    %% Carry over top-level engine fields (name, backend, model, gpu_ids, tp_size)
+    GpuIds = maps:get(gpu_ids, EngineMap, []),
+    TpSize = maps:get(tp_size, EngineMap, 1),
+    Name = maps:get(name, EngineMap),
+    Backend = maps:get(backend, EngineMap),
+    Model = maps:get(model, EngineMap),
+    BaseMerged#{
+        name => Name,
+        backend => Backend,
+        model => Model,
+        gpu_ids => GpuIds,
+        tp_size => TpSize
+    }.
+
+-spec deep_merge(map(), map()) -> map().
+deep_merge(Base, Override) when is_map(Base), is_map(Override) ->
+    maps:fold(fun(K, V, Acc) ->
+        case maps:find(K, Acc) of
+            {ok, ExistingV} when is_map(ExistingV), is_map(V) ->
+                maps:put(K, deep_merge(ExistingV, V), Acc);
+            _ ->
+                maps:put(K, V, Acc)
+        end
+    end, Base, Override);
+deep_merge(_Base, Override) ->
+    Override.
+
+-spec atomize_keys(term()) -> term().
+atomize_keys(Map) when is_map(Map) ->
+    maps:fold(fun(K, V, Acc) ->
+        Key = case K of
+            B when is_binary(B) -> binary_to_atom(B, utf8);
+            A when is_atom(A) -> A
+        end,
+        maps:put(Key, atomize_keys(V), Acc)
+    end, #{}, Map);
+atomize_keys(List) when is_list(List) ->
+    lists:map(fun atomize_keys/1, List);
+atomize_keys(Other) ->
+    Other.
+
+-spec get_nested(list(atom()), map(), term()) -> term().
+get_nested([], Value, _Default) ->
+    Value;
+get_nested([Key | Rest], Map, Default) when is_map(Map) ->
+    case maps:find(Key, Map) of
+        {ok, Value} -> get_nested(Rest, Value, Default);
+        error -> Default
+    end;
+get_nested(_Keys, _NotAMap, Default) ->
+    Default.
