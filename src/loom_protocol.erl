@@ -32,7 +32,8 @@
   | {health}
   | {memory}
   | {cancel, Id :: binary()}
-  | {shutdown}.
+  | {shutdown}
+  | {crash, ExitCode :: non_neg_integer()}.
 
 -type inbound_msg() ::
     {token, Id :: binary(), TokenId :: non_neg_integer(), Text :: binary(), Finished :: boolean()}
@@ -70,7 +71,9 @@ encode({generate, Id, Prompt, Params}) ->
         id => Id,
         prompt => Prompt,
         params => Params
-    })).
+    }));
+encode({crash, ExitCode}) ->
+    terminate_line(loom_json:encode(#{type => crash, exit_code => ExitCode})).
 
 -spec decode(binary()) -> {ok, inbound_msg()} | {error, decode_error()}.
 decode(Bin) ->

@@ -100,6 +100,14 @@ def handle_shutdown(_msg):
     os._exit(0)
 
 
+def handle_crash(msg):
+    """Force-exit with a specific exit code (for crash recovery testing)."""
+    exit_code = msg.get("exit_code", 1)
+    print(f"[mock_adapter] crash requested, exit_code={exit_code}", file=sys.stderr)
+    sys.stderr.flush()
+    os._exit(exit_code)
+
+
 # ASSUMPTION: Protocol matches KNOWLEDGE.md section 4.4 line-delimited JSON wire protocol.
 HANDLERS = {
     "health": handle_health,
@@ -107,6 +115,7 @@ HANDLERS = {
     "generate": handle_generate,
     "cancel": handle_cancel,
     "shutdown": handle_shutdown,
+    "crash": handle_crash,
 }
 
 
