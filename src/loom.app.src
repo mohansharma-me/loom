@@ -8,7 +8,8 @@
         stdlib,
         sasl,
         cowboy,
-        prometheus
+        prometheus,
+        telemetry
     ]},
     {env, []},
     {modules, []},
