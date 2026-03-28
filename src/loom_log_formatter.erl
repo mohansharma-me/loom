@@ -1,4 +1,7 @@
 -module(loom_log_formatter).
+%% ASSUMPTION: no_underspecs needed — safe_value/1 intentionally uses broad
+%% term() -> term() spec for API stability across all Erlang value types.
+-dialyzer(no_underspecs).
 
 %% Logger formatter callbacks
 -export([format/2, check_config/1]).
@@ -36,7 +39,7 @@ format(Event, _Config) ->
     [loom_json:encode(Fallback), $\n].
 
 %% @doc No-op config validation — all configs accepted.
--spec check_config(logger:formatter_config()) -> ok | {error, term()}.
+-spec check_config(logger:formatter_config()) -> ok.
 check_config(_Config) ->
     ok.
 
