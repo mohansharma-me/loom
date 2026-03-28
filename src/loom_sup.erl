@@ -1,5 +1,7 @@
 -module(loom_sup).
 -behaviour(supervisor).
+%% ASSUMPTION: no_underspecs needed — supervisor init/1 return type is
+%% broader than Dialyzer infers from our child specs.
 -dialyzer(no_underspecs).
 
 -export([start_link/0, init/1]).

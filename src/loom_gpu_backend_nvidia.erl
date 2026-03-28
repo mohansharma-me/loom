@@ -16,6 +16,8 @@
 %%%-------------------------------------------------------------------
 -module(loom_gpu_backend_nvidia).
 -behaviour(loom_gpu_backend).
+%% ASSUMPTION: no_underspecs needed — loom_gpu_backend behaviour callbacks
+%% have broader specs than our nvidia-specific implementation.
 -dialyzer(no_underspecs).
 
 -export([detect/0, init/1, poll/1, terminate/1, default_thresholds/0]).

@@ -1,5 +1,7 @@
 -module(loom_http_server).
 -behaviour(gen_server).
+%% ASSUMPTION: no_underspecs needed — gen_server callback specs (init/1,
+%% handle_call/3, handle_info/2) are broader than our implementation.
 -dialyzer(no_underspecs).
 
 %% ASSUMPTION: This gen_server is a lifecycle wrapper only. It does NOT sit in

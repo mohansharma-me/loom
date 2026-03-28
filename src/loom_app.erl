@@ -1,5 +1,7 @@
 -module(loom_app).
 -behaviour(application).
+%% ASSUMPTION: no_underspecs needed — application callback start/2 has a
+%% broader return type than Dialyzer infers from our implementation.
 -dialyzer(no_underspecs).
 
 -export([start/2, stop/1]).

@@ -16,6 +16,8 @@
 %%%-------------------------------------------------------------------
 -module(loom_port).
 -behaviour(gen_statem).
+%% ASSUMPTION: no_underspecs needed — gen_statem callbacks and port operation
+%% specs are broader than Dialyzer infers from our state machine.
 -dialyzer(no_underspecs).
 
 %% Domain types
@@ -23,7 +25,6 @@
 -type port_opts() :: #{
     command := string(),
     args => [string()],
-    env => [{string(), string()}],
     owner => pid(),
     engine_id => binary(),
     max_line_length => pos_integer(),
@@ -73,7 +74,7 @@
 %% Public API
 %%====================================================================
 
--spec start_link(map()) -> {ok, pid()} | {error, term()}.
+-spec start_link(port_opts()) -> {ok, pid()} | {error, term()}.
 start_link(Opts) ->
     %% ASSUMPTION: owner defaults to the calling process, resolved here
     %% (not in init/1 where self() would be the gen_statem pid).

@@ -1,4 +1,6 @@
 -module(loom_protocol).
+%% ASSUMPTION: no_underspecs needed — generic validation helpers (with_fields,
+%% require) use broad json:decode_value() specs that Dialyzer narrows.
 -dialyzer(no_underspecs).
 
 -export([encode/1, decode/1, new_buffer/0, feed/2]).
@@ -11,7 +13,7 @@
 
 %% --- Internal types ---
 
-%% ASSUMPTION: json_object matches the shape returned by OTP 27 json:decode/1
+%% ASSUMPTION: json_object matches the shape returned by OTP 27+ json:decode/1
 %% for JSON objects. This avoids underspecs warnings from Dialyzer narrowing
 %% bare map() to the specific JSON-decoded map shape.
 -type json_object() :: #{binary() => json:decode_value()}.
@@ -47,6 +49,7 @@
     {invalid_json, term()}
   | missing_type
   | {unknown_type, binary()}
+  | {invalid_type_field, json:decode_value()}
   | {missing_field, binary(), binary()}
   | {invalid_field, binary(), atom(), term()}.
 
@@ -103,7 +106,7 @@ decode_by_type(<<"memory">>, Map) -> decode_memory(Map);
 decode_by_type(<<"ready">>, Map) -> decode_ready(Map);
 decode_by_type(<<"heartbeat">>, Map) -> decode_heartbeat(Map);
 decode_by_type(Type, _Map) when is_binary(Type) -> {error, {unknown_type, Type}};
-decode_by_type(_Type, _Map) -> {error, {unknown_type, <<"non_binary_type">>}}.
+decode_by_type(Type, _Map) -> {error, {invalid_type_field, Type}}.
 
 %% --- Validation helpers ---
 

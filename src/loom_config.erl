@@ -1,4 +1,6 @@
 -module(loom_config).
+%% ASSUMPTION: no_underspecs needed because validation helpers use broad
+%% specs (validation_detail() union) for API stability across all callers.
 -dialyzer(no_underspecs).
 
 -type config_path() :: [atom()].
@@ -6,10 +8,8 @@
 -type validation_detail() ::
     {empty_engines} |
     {missing_field, atom(), atom()} |
-    {invalid_type, atom(), atom()} |
     {duplicate_engine, binary()} |
     {invalid_engine_name, binary()} |
-    {unknown_backend, binary()} |
     {unknown_backend, binary(), engine, binary()} |
     {adapter_not_found, string(), engine, binary()} |
     {invalid_type, atom(), expected_list} |
@@ -20,7 +20,7 @@
     {json_parse, term()} |
     {validation, validation_detail()}.
 
--export_type([config_path/0, validation_error/0]).
+-export_type([config_path/0, validation_error/0, validation_detail/0]).
 
 %% Public API
 -export([load/0, load/1]).

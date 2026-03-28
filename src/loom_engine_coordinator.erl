@@ -14,6 +14,8 @@
 %%%-------------------------------------------------------------------
 -module(loom_engine_coordinator).
 -behaviour(gen_statem).
+%% ASSUMPTION: no_underspecs needed because gen_statem callbacks and ETS
+%% operations use broader specs than Dialyzer infers from our state machine.
 -dialyzer(no_underspecs).
 
 %% Domain types
@@ -191,12 +193,12 @@ start_link(Config) ->
     end.
 
 -spec generate(pid(), binary(), map()) ->
-    {ok, binary()} | {error, not_ready | draining | overloaded | stopped}.
+    {ok, engine_request_id()} | {error, not_ready | draining | overloaded | stopped}.
 generate(Pid, Prompt, Params) ->
     gen_statem:call(Pid, {generate, Prompt, Params}).
 
 -spec generate(pid(), binary(), map(), timeout()) ->
-    {ok, binary()} | {error, not_ready | draining | overloaded | stopped}.
+    {ok, engine_request_id()} | {error, not_ready | draining | overloaded | stopped}.
 generate(Pid, Prompt, Params, Timeout) ->
     gen_statem:call(Pid, {generate, Prompt, Params}, Timeout).
 
@@ -331,7 +333,7 @@ starting(info, {loom_port_ready, PortRef, Model, Backend}, Data) ->
     emit_state_change(Data#data.engine_id, starting, ready),
     {next_state, ready, Data#data{port_ref = PortRef}};
 starting(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
-    %% Port died before reaching ready → go to stopped
+    %% Port died before reaching ready -- go to stopped
     NormalizedCode = normalize_exit_code(ExitCode),
     ?LOG_WARNING(#{msg => port_exited_during_startup,
                    engine_id => Data#data.engine_id,
@@ -339,14 +341,14 @@ starting(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
     emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(info, {loom_port_timeout, _Ref}, Data) ->
-    %% Heartbeat timeout from loom_port → shutdown port, go to stopped
+    %% Heartbeat timeout from loom_port -- shutdown port, go to stopped
     ?LOG_WARNING(#{msg => port_heartbeat_timeout_during_startup,
                    engine_id => Data#data.engine_id}),
     stop_port(Data),
     emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(state_timeout, startup_timeout, Data) ->
-    %% Startup timeout → shutdown port, go to stopped
+    %% Startup timeout -- shutdown port, go to stopped
     ?LOG_WARNING(#{msg => startup_timeout_expired,
                    engine_id => Data#data.engine_id}),
     stop_port(Data),
@@ -839,7 +841,7 @@ generate_request_id() ->
 
 %% @doc Build loom_port options from coordinator config.
 %% ASSUMPTION: The coordinator is always the owner of its loom_port instance.
--spec build_port_opts(map()) -> map().
+-spec build_port_opts(map()) -> loom_port:port_opts().
 build_port_opts(Config) ->
     BaseOpts = #{
         command   => maps:get(command, Config),

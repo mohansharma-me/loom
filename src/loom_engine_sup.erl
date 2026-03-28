@@ -22,6 +22,8 @@
 %%%-------------------------------------------------------------------
 -module(loom_engine_sup).
 -behaviour(supervisor).
+%% ASSUMPTION: no_underspecs needed — supervisor init/1 and config validation
+%% helpers use broader specs than Dialyzer infers.
 -dialyzer(no_underspecs).
 
 -export([start_link/1, start_monitor/2, sup_name/1]).

@@ -1,4 +1,6 @@
 -module(loom_format_openai).
+%% ASSUMPTION: no_underspecs needed — request/response format dispatch
+%% helpers use broad map()/binary() specs for API stability.
 -dialyzer(no_underspecs).
 
 -export([

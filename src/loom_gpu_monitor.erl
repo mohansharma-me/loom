@@ -15,6 +15,8 @@
 %%%-------------------------------------------------------------------
 -module(loom_gpu_monitor).
 -behaviour(gen_server).
+%% ASSUMPTION: no_underspecs needed — gen_server callbacks and backend
+%% dispatch helpers use broader specs than Dialyzer infers.
 -dialyzer(no_underspecs).
 
 %% Domain types
@@ -44,7 +46,7 @@
     poll_timeout_ms    :: pos_integer(),
     timer_ref          :: reference() | undefined,
     latest_metrics     :: loom_gpu_backend:metrics() | undefined,
-    thresholds         :: #{atom() => number()},
+    thresholds         :: threshold_config(),
     breached           :: #{atom() => boolean()},
     consecutive_errors :: non_neg_integer(),
     coordinator_pid    :: pid() | undefined,

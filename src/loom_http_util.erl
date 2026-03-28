@@ -1,4 +1,6 @@
 -module(loom_http_util).
+%% ASSUMPTION: no_underspecs needed — HTTP utility helpers return precise
+%% map shapes that Dialyzer narrows beyond the documented spec.
 -dialyzer(no_underspecs).
 
 %% ASSUMPTION: OTP >= 26 is required for binary:encode_hex/2 with lowercase option.
