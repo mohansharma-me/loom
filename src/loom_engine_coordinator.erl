@@ -250,6 +250,7 @@ init(Config) ->
     %% we need to survive port crashes for self-heal.
     process_flag(trap_exit, true),
     EngineId = maps:get(engine_id, Config),
+    logger:set_process_metadata(#{engine_id => EngineId}),
     MaxConcurrent = maps:get(max_concurrent, Config),
     %% Create named ETS tables for lock-free reads by router/metrics.
     %% ASSUMPTION: Table names are unique per EngineId; if a coordinator

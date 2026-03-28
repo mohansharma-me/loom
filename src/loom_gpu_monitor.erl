@@ -70,6 +70,8 @@ stop(Pid) ->
 -spec init(map()) -> {ok, #data{}} | {stop, term()}.
 init(Opts) ->
     GpuId = maps:get(gpu_id, Opts),
+    EngineId = maps:get(engine_id, Opts, undefined),
+    logger:set_process_metadata(#{engine_id => EngineId, gpu_id => GpuId}),
     PollInterval = maps:get(poll_interval_ms, Opts, 5000),
     PollTimeout = maps:get(poll_timeout_ms, Opts, 3000),
     Coordinator = maps:get(coordinator, Opts, undefined),
