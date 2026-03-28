@@ -3,6 +3,10 @@
 %% ASSUMPTION: OTP >= 26 is required for binary:encode_hex/2 with lowercase option.
 %% The rebar.config specifies {minimum_otp_vsn, "27"}, so this is safe.
 
+%% Domain types
+-type request_id() :: binary().
+-export_type([request_id/0]).
+
 -export([
     generate_request_id/0,
     unix_timestamp/0,
@@ -17,7 +21,7 @@
     read_and_decode_body/2
 ]).
 
--spec generate_request_id() -> binary().
+-spec generate_request_id() -> request_id().
 generate_request_id() ->
     Bytes = crypto:strong_rand_bytes(16),
     Hex = binary:encode_hex(Bytes, lowercase),

@@ -15,6 +15,12 @@
 -module(loom_engine_coordinator).
 -behaviour(gen_statem).
 
+%% Domain types
+-type engine_id() :: binary().
+-type engine_status() :: starting | ready | draining | stopped.
+-type engine_request_id() :: binary().
+-export_type([engine_id/0, engine_status/0, engine_request_id/0]).
+
 %% Public API
 -export([
     start_link/1,
@@ -160,12 +166,12 @@ check_values_loop([{Key, Pred} | Rest], Config) ->
 %% ETS table name helpers
 %%====================================================================
 
--spec reqs_table_name(binary()) -> atom().
+-spec reqs_table_name(engine_id()) -> atom().
 reqs_table_name(EngineId) ->
     %% ASSUMPTION: EngineId contains only alphanumeric chars and underscores.
     binary_to_atom(<<"loom_coord_reqs_", EngineId/binary>>).
 
--spec meta_table_name(binary()) -> atom().
+-spec meta_table_name(engine_id()) -> atom().
 meta_table_name(EngineId) ->
     %% ASSUMPTION: EngineId contains only alphanumeric chars and underscores.
     binary_to_atom(<<"loom_coord_meta_", EngineId/binary>>).
@@ -201,7 +207,7 @@ shutdown(Pid) ->
 stop(Pid) ->
     gen_statem:cast(Pid, do_stop).
 
--spec get_status(binary()) -> starting | ready | draining | stopped.
+-spec get_status(engine_id()) -> engine_status().
 get_status(EngineId) ->
     MetaTable = meta_table_name(EngineId),
     try ets:lookup(MetaTable, meta) of
@@ -213,7 +219,7 @@ get_status(EngineId) ->
             stopped
     end.
 
--spec get_load(binary()) -> non_neg_integer().
+-spec get_load(engine_id()) -> non_neg_integer().
 get_load(EngineId) ->
     ReqsTable = reqs_table_name(EngineId),
     try ets:info(ReqsTable, size) of
@@ -223,7 +229,7 @@ get_load(EngineId) ->
         error:badarg -> 0
     end.
 
--spec get_info(binary()) -> map().
+-spec get_info(engine_id()) -> map().
 get_info(EngineId) ->
     MetaTable = meta_table_name(EngineId),
     ReqsTable = reqs_table_name(EngineId),
@@ -819,7 +825,7 @@ terminate(Reason, State, #data{engine_id = EngineId} = Data) ->
 %%====================================================================
 
 %% @doc Generate a unique, monotonically increasing request identifier.
--spec generate_request_id() -> binary().
+-spec generate_request_id() -> engine_request_id().
 generate_request_id() ->
     iolist_to_binary([
         <<"req-">>,
@@ -855,7 +861,7 @@ stop_port(#data{port_pid = PortPid}) ->
     end.
 
 %% @doc Update the status field in the meta ETS table.
--spec update_meta_status(atom(), #data{}) -> ok.
+-spec update_meta_status(engine_status(), #data{}) -> ok.
 update_meta_status(Status, #data{meta_table = MetaTable, engine_id = EngineId}) ->
     case ets:update_element(MetaTable, meta, {2, Status}) of
         true -> ok;

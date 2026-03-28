@@ -16,6 +16,13 @@
 -module(loom_gpu_monitor).
 -behaviour(gen_server).
 
+%% Domain types
+-type threshold_config() :: #{
+    temperature_c => float(),
+    mem_percent => float()
+}.
+-export_type([threshold_config/0]).
+
 %% API
 -export([start_link/1, get_status/1, force_poll/1, stop/1]).
 

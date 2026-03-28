@@ -17,6 +17,22 @@
 -module(loom_port).
 -behaviour(gen_statem).
 
+%% Domain types
+-type port_state() :: spawning | loading | ready | shutting_down.
+-type port_opts() :: #{
+    command := string(),
+    args => [string()],
+    env => [{string(), string()}],
+    owner => pid(),
+    engine_id => binary(),
+    max_line_length => pos_integer(),
+    spawn_timeout_ms => pos_integer(),
+    heartbeat_timeout_ms => pos_integer(),
+    shutdown_timeout_ms => pos_integer(),
+    post_close_timeout_ms => pos_integer()
+}.
+-export_type([port_state/0, port_opts/0]).
+
 %% Public API
 -export([
     start_link/1,
@@ -74,7 +90,7 @@ send(Pid, Msg) ->
 shutdown(Pid) ->
     gen_statem:cast(Pid, shutdown).
 
--spec get_state(pid()) -> spawning | loading | ready | shutting_down.
+-spec get_state(pid()) -> port_state().
 get_state(Pid) ->
     gen_statem:call(Pid, get_state).
 
