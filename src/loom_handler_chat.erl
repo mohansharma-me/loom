@@ -1,5 +1,8 @@
 -module(loom_handler_chat).
 -behaviour(cowboy_loop).
+%% ASSUMPTION: no_underspecs needed — cowboy_loop callbacks (init/2, info/3)
+%% use broad types (cowboy_req:req(), term()) that Dialyzer narrows.
+-dialyzer(no_underspecs).
 
 -export([init/2, info/3, terminate/3]).
 

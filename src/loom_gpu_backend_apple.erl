@@ -19,6 +19,10 @@
 %%%-------------------------------------------------------------------
 -module(loom_gpu_backend_apple).
 -behaviour(loom_gpu_backend).
+-dialyzer(no_underspecs).
+%% ASSUMPTION: init/1 spec includes {error, _} to match loom_gpu_backend
+%% behaviour contract, but Apple backend init always succeeds.
+-dialyzer({nowarn_function, init/1}).
 
 -export([detect/0, init/1, poll/1, terminate/1, default_thresholds/0]).
 -export([parse_sysctl_memsize/1, parse_vm_stat/2, build_metrics/2]).

@@ -14,6 +14,15 @@
 %%%-------------------------------------------------------------------
 -module(loom_engine_coordinator).
 -behaviour(gen_statem).
+%% ASSUMPTION: no_underspecs needed because gen_statem callbacks and ETS
+%% operations use broader specs than Dialyzer infers from our state machine.
+-dialyzer(no_underspecs).
+
+%% Domain types
+-type engine_id() :: binary().
+-type engine_status() :: starting | ready | draining | stopped.
+-type engine_request_id() :: binary().
+-export_type([engine_id/0, engine_status/0, engine_request_id/0]).
 
 %% Public API
 -export([
@@ -160,12 +169,12 @@ check_values_loop([{Key, Pred} | Rest], Config) ->
 %% ETS table name helpers
 %%====================================================================
 
--spec reqs_table_name(binary()) -> atom().
+-spec reqs_table_name(engine_id()) -> atom().
 reqs_table_name(EngineId) ->
     %% ASSUMPTION: EngineId contains only alphanumeric chars and underscores.
     binary_to_atom(<<"loom_coord_reqs_", EngineId/binary>>).
 
--spec meta_table_name(binary()) -> atom().
+-spec meta_table_name(engine_id()) -> atom().
 meta_table_name(EngineId) ->
     %% ASSUMPTION: EngineId contains only alphanumeric chars and underscores.
     binary_to_atom(<<"loom_coord_meta_", EngineId/binary>>).
@@ -184,12 +193,12 @@ start_link(Config) ->
     end.
 
 -spec generate(pid(), binary(), map()) ->
-    {ok, binary()} | {error, not_ready | draining | overloaded | stopped}.
+    {ok, engine_request_id()} | {error, not_ready | draining | overloaded | stopped}.
 generate(Pid, Prompt, Params) ->
     gen_statem:call(Pid, {generate, Prompt, Params}).
 
 -spec generate(pid(), binary(), map(), timeout()) ->
-    {ok, binary()} | {error, not_ready | draining | overloaded | stopped}.
+    {ok, engine_request_id()} | {error, not_ready | draining | overloaded | stopped}.
 generate(Pid, Prompt, Params, Timeout) ->
     gen_statem:call(Pid, {generate, Prompt, Params}, Timeout).
 
@@ -201,7 +210,7 @@ shutdown(Pid) ->
 stop(Pid) ->
     gen_statem:cast(Pid, do_stop).
 
--spec get_status(binary()) -> starting | ready | draining | stopped.
+-spec get_status(engine_id()) -> engine_status().
 get_status(EngineId) ->
     MetaTable = meta_table_name(EngineId),
     try ets:lookup(MetaTable, meta) of
@@ -213,7 +222,7 @@ get_status(EngineId) ->
             stopped
     end.
 
--spec get_load(binary()) -> non_neg_integer().
+-spec get_load(engine_id()) -> non_neg_integer().
 get_load(EngineId) ->
     ReqsTable = reqs_table_name(EngineId),
     try ets:info(ReqsTable, size) of
@@ -223,7 +232,7 @@ get_load(EngineId) ->
         error:badarg -> 0
     end.
 
--spec get_info(binary()) -> map().
+-spec get_info(engine_id()) -> map().
 get_info(EngineId) ->
     MetaTable = meta_table_name(EngineId),
     ReqsTable = reqs_table_name(EngineId),
@@ -324,7 +333,7 @@ starting(info, {loom_port_ready, PortRef, Model, Backend}, Data) ->
     emit_state_change(Data#data.engine_id, starting, ready),
     {next_state, ready, Data#data{port_ref = PortRef}};
 starting(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
-    %% Port died before reaching ready → go to stopped
+    %% Port died before reaching ready -- go to stopped
     NormalizedCode = normalize_exit_code(ExitCode),
     ?LOG_WARNING(#{msg => port_exited_during_startup,
                    engine_id => Data#data.engine_id,
@@ -332,14 +341,14 @@ starting(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
     emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(info, {loom_port_timeout, _Ref}, Data) ->
-    %% Heartbeat timeout from loom_port → shutdown port, go to stopped
+    %% Heartbeat timeout from loom_port -- shutdown port, go to stopped
     ?LOG_WARNING(#{msg => port_heartbeat_timeout_during_startup,
                    engine_id => Data#data.engine_id}),
     stop_port(Data),
     emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(state_timeout, startup_timeout, Data) ->
-    %% Startup timeout → shutdown port, go to stopped
+    %% Startup timeout -- shutdown port, go to stopped
     ?LOG_WARNING(#{msg => startup_timeout_expired,
                    engine_id => Data#data.engine_id}),
     stop_port(Data),
@@ -819,7 +828,7 @@ terminate(Reason, State, #data{engine_id = EngineId} = Data) ->
 %%====================================================================
 
 %% @doc Generate a unique, monotonically increasing request identifier.
--spec generate_request_id() -> binary().
+-spec generate_request_id() -> engine_request_id().
 generate_request_id() ->
     iolist_to_binary([
         <<"req-">>,
@@ -832,7 +841,7 @@ generate_request_id() ->
 
 %% @doc Build loom_port options from coordinator config.
 %% ASSUMPTION: The coordinator is always the owner of its loom_port instance.
--spec build_port_opts(map()) -> map().
+-spec build_port_opts(map()) -> loom_port:port_opts().
 build_port_opts(Config) ->
     BaseOpts = #{
         command   => maps:get(command, Config),
@@ -855,7 +864,7 @@ stop_port(#data{port_pid = PortPid}) ->
     end.
 
 %% @doc Update the status field in the meta ETS table.
--spec update_meta_status(atom(), #data{}) -> ok.
+-spec update_meta_status(engine_status(), #data{}) -> ok.
 update_meta_status(Status, #data{meta_table = MetaTable, engine_id = EngineId}) ->
     case ets:update_element(MetaTable, meta, {2, Status}) of
         true -> ok;

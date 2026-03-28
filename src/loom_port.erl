@@ -16,6 +16,24 @@
 %%%-------------------------------------------------------------------
 -module(loom_port).
 -behaviour(gen_statem).
+%% ASSUMPTION: no_underspecs needed — gen_statem callbacks and port operation
+%% specs are broader than Dialyzer infers from our state machine.
+-dialyzer(no_underspecs).
+
+%% Domain types
+-type port_state() :: spawning | loading | ready | shutting_down.
+-type port_opts() :: #{
+    command := string(),
+    args => [string()],
+    owner => pid(),
+    engine_id => binary(),
+    max_line_length => pos_integer(),
+    spawn_timeout_ms => pos_integer(),
+    heartbeat_timeout_ms => pos_integer(),
+    shutdown_timeout_ms => pos_integer(),
+    post_close_timeout_ms => pos_integer()
+}.
+-export_type([port_state/0, port_opts/0]).
 
 %% Public API
 -export([
@@ -56,7 +74,7 @@
 %% Public API
 %%====================================================================
 
--spec start_link(map()) -> {ok, pid()} | {error, term()}.
+-spec start_link(port_opts()) -> {ok, pid()} | {error, term()}.
 start_link(Opts) ->
     %% ASSUMPTION: owner defaults to the calling process, resolved here
     %% (not in init/1 where self() would be the gen_statem pid).
@@ -74,7 +92,7 @@ send(Pid, Msg) ->
 shutdown(Pid) ->
     gen_statem:cast(Pid, shutdown).
 
--spec get_state(pid()) -> spawning | loading | ready | shutting_down.
+-spec get_state(pid()) -> port_state().
 get_state(Pid) ->
     gen_statem:call(Pid, get_state).
 

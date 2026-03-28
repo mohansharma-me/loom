@@ -1,12 +1,26 @@
 -module(loom_config).
+%% ASSUMPTION: no_underspecs needed because validation helpers use broad
+%% specs (validation_detail() union) for API stability across all callers.
+-dialyzer(no_underspecs).
 
 -type config_path() :: [atom()].
+
+-type validation_detail() ::
+    {empty_engines} |
+    {missing_field, atom(), atom()} |
+    {duplicate_engine, binary()} |
+    {invalid_engine_name, binary()} |
+    {unknown_backend, binary(), engine, binary()} |
+    {adapter_not_found, string(), engine, binary()} |
+    {invalid_type, atom(), expected_list} |
+    {invalid_type, atom(), expected_positive_integer}.
+
 -type validation_error() ::
     {config_file, atom(), file:filename()} |
     {json_parse, term()} |
-    {validation, term()}.
+    {validation, validation_detail()}.
 
--export_type([config_path/0, validation_error/0]).
+-export_type([config_path/0, validation_error/0, validation_detail/0]).
 
 %% Public API
 -export([load/0, load/1]).
@@ -27,13 +41,17 @@
 %% ASSUMPTION: server_defaults/0 carries only server-level settings.
 %% Handler-specific defaults (max_body_size, inactivity_timeout, generate_timeout)
 %% live in loom_http_util:default_config/0 to avoid duplicate default sources.
--spec server_defaults() -> map().
+-spec server_defaults() ->
+    #{port := pos_integer(), ip := inet:ip_address(), max_connections := pos_integer()}.
 server_defaults() ->
     #{port => 8080,
       ip => {0, 0, 0, 0},
       max_connections => 1024}.
 
--spec port_defaults() -> map().
+-spec port_defaults() ->
+    #{max_line_length := pos_integer(), spawn_timeout_ms := pos_integer(),
+      heartbeat_timeout_ms := pos_integer(), shutdown_timeout_ms := pos_integer(),
+      post_close_timeout_ms := pos_integer()}.
 port_defaults() ->
     #{max_line_length => 1048576,
       spawn_timeout_ms => 5000,
@@ -41,7 +59,9 @@ port_defaults() ->
       shutdown_timeout_ms => 10000,
       post_close_timeout_ms => 5000}.
 
--spec gpu_monitor_defaults() -> map().
+-spec gpu_monitor_defaults() ->
+    #{poll_interval_ms := pos_integer(), poll_timeout_ms := pos_integer(),
+      backend := atom(), thresholds := #{temperature_c := float(), mem_percent := float()}}.
 gpu_monitor_defaults() ->
     #{poll_interval_ms => 5000,
       poll_timeout_ms => 3000,
@@ -49,13 +69,16 @@ gpu_monitor_defaults() ->
       thresholds => #{temperature_c => 85.0,
                       mem_percent => 95.0}}.
 
--spec coordinator_defaults() -> map().
+-spec coordinator_defaults() ->
+    #{startup_timeout_ms := pos_integer(), drain_timeout_ms := pos_integer(),
+      max_concurrent := pos_integer()}.
 coordinator_defaults() ->
     #{startup_timeout_ms => 120000,
       drain_timeout_ms => 30000,
       max_concurrent => 64}.
 
--spec engine_sup_defaults() -> map().
+-spec engine_sup_defaults() ->
+    #{max_restarts := pos_integer(), max_period := pos_integer()}.
 engine_sup_defaults() ->
     #{max_restarts => 5,
       max_period => 60}.
@@ -64,11 +87,11 @@ engine_sup_defaults() ->
 %%% Public API
 %%% ===================================================================
 
--spec load() -> ok | {error, term()}.
+-spec load() -> ok | {error, validation_error()}.
 load() ->
     load(?DEFAULT_PATH).
 
--spec load(file:filename()) -> ok | {error, term()}.
+-spec load(file:filename()) -> ok | {error, validation_error()}.
 load(Path) ->
     case file:read_file(Path) of
         {ok, Bin} ->
@@ -131,7 +154,7 @@ get_server() ->
             end
     end.
 
--spec resolve_adapter(map()) -> {ok, string()} | {error, term()}.
+-spec resolve_adapter(map()) -> {ok, string()} | {error, {unknown_backend, binary() | undefined}}.
 resolve_adapter(#{adapter_cmd := Cmd}) when is_binary(Cmd), byte_size(Cmd) > 0 ->
     {ok, binary_to_list(Cmd)};
 resolve_adapter(#{adapter_cmd := Cmd}) when is_list(Cmd), length(Cmd) > 0 ->
@@ -161,7 +184,7 @@ adapter_filename(_) -> error.
 %%% Validation
 %%% ===================================================================
 
--spec validate(map()) -> ok | {error, term()}.
+-spec validate(map()) -> ok | {error, {validation, validation_detail()}}.
 validate(Config) ->
     case validate_engines_present(Config) of
         ok ->
@@ -173,13 +196,13 @@ validate(Config) ->
         Err -> Err
     end.
 
--spec validate_engines_present(map()) -> ok | {error, term()}.
+-spec validate_engines_present(map()) -> ok | {error, {validation, validation_detail()}}.
 validate_engines_present(#{engines := Engines}) when is_list(Engines), length(Engines) > 0 -> ok;
 validate_engines_present(#{engines := []}) -> {error, {validation, {empty_engines}}};
 validate_engines_present(#{engines := _}) -> {error, {validation, {invalid_type, engines, expected_list}}};
 validate_engines_present(_) -> {error, {validation, {missing_field, root, engines}}}.
 
--spec validate_engines(list(map()), [binary()]) -> ok | {error, term()}.
+-spec validate_engines(list(map()), [binary()]) -> ok | {error, {validation, validation_detail()}}.
 validate_engines([], _Seen) -> ok;
 validate_engines([Engine | Rest], Seen) ->
     case validate_single_engine(Engine, Seen) of
@@ -187,7 +210,7 @@ validate_engines([Engine | Rest], Seen) ->
         {error, _} = Err -> Err
     end.
 
--spec validate_single_engine(map(), [binary()]) -> {ok, binary()} | {error, term()}.
+-spec validate_single_engine(map(), [binary()]) -> {ok, binary()} | {error, {validation, validation_detail()}}.
 validate_single_engine(Engine, Seen) ->
     case validate_required_engine_fields(Engine) of
         {ok, Name} ->
@@ -210,7 +233,7 @@ validate_single_engine(Engine, Seen) ->
         Err -> Err
     end.
 
--spec validate_required_engine_fields(map()) -> {ok, binary()} | {error, term()}.
+-spec validate_required_engine_fields(map()) -> {ok, binary()} | {error, {validation, validation_detail()}}.
 validate_required_engine_fields(Engine) ->
     case maps:find(name, Engine) of
         {ok, Name} when is_binary(Name) ->
@@ -225,14 +248,14 @@ validate_required_engine_fields(Engine) ->
         error -> {error, {validation, {missing_field, engine, name}}}
     end.
 
--spec validate_engine_name_format(binary()) -> ok | {error, term()}.
+-spec validate_engine_name_format(binary()) -> ok | {error, {validation, validation_detail()}}.
 validate_engine_name_format(Name) ->
     case re:run(Name, <<"^[a-zA-Z0-9._-]+$">>) of
         {match, _} when byte_size(Name) =< 64 -> ok;
         _ -> {error, {validation, {invalid_engine_name, Name}}}
     end.
 
--spec validate_engine_backend(map(), binary()) -> ok | {error, term()}.
+-spec validate_engine_backend(map(), binary()) -> ok | {error, {validation, validation_detail()}}.
 validate_engine_backend(#{adapter_cmd := Cmd}, _Name) when is_binary(Cmd), byte_size(Cmd) > 0 -> ok;
 validate_engine_backend(#{backend := Backend}, Name) ->
     case adapter_filename(Backend) of
@@ -240,7 +263,7 @@ validate_engine_backend(#{backend := Backend}, Name) ->
         error -> {error, {validation, {unknown_backend, Backend, engine, Name}}}
     end.
 
--spec validate_adapter_exists(map(), binary()) -> ok | {error, term()}.
+-spec validate_adapter_exists(map(), binary()) -> ok | {error, {validation, validation_detail()}}.
 validate_adapter_exists(Engine, Name) ->
     case resolve_adapter(Engine) of
         {ok, Path} ->
@@ -253,7 +276,7 @@ validate_adapter_exists(Engine, Name) ->
             ok
     end.
 
--spec validate_engine_optional_fields(map(), binary()) -> {ok, binary()} | {error, term()}.
+-spec validate_engine_optional_fields(map(), binary()) -> {ok, binary()} | {error, {validation, validation_detail()}}.
 validate_engine_optional_fields(Engine, Name) ->
     case maps:find(gpu_ids, Engine) of
         {ok, GpuIds} when not is_list(GpuIds) ->
@@ -261,12 +284,12 @@ validate_engine_optional_fields(Engine, Name) ->
         _ -> {ok, Name}
     end.
 
--spec validate_defaults(map()) -> ok | {error, term()}.
+-spec validate_defaults(map()) -> ok | {error, {validation, validation_detail()}}.
 validate_defaults(#{defaults := Defaults}) when is_map(Defaults) ->
     validate_defaults_sections(Defaults);
 validate_defaults(_) -> ok.
 
--spec validate_defaults_sections(map()) -> ok | {error, term()}.
+-spec validate_defaults_sections(map()) -> ok | {error, {validation, validation_detail()}}.
 validate_defaults_sections(Defaults) ->
     Sections = [
         {coordinator, [startup_timeout_ms, drain_timeout_ms, max_concurrent]},
@@ -277,7 +300,7 @@ validate_defaults_sections(Defaults) ->
     ],
     validate_sections(Defaults, Sections).
 
--spec validate_sections(map(), [{atom(), [atom()]}]) -> ok | {error, term()}.
+-spec validate_sections(map(), [{atom(), [atom()]}]) -> ok | {error, {validation, validation_detail()}}.
 validate_sections(_Defaults, []) -> ok;
 validate_sections(Defaults, [{Section, Fields} | Rest]) ->
     case maps:find(Section, Defaults) of
@@ -289,7 +312,7 @@ validate_sections(Defaults, [{Section, Fields} | Rest]) ->
         _ -> validate_sections(Defaults, Rest)
     end.
 
--spec validate_positive_integer_fields(map(), [atom()]) -> ok | {error, term()}.
+-spec validate_positive_integer_fields(map(), [atom()]) -> ok | {error, {validation, validation_detail()}}.
 validate_positive_integer_fields(_Map, []) -> ok;
 validate_positive_integer_fields(Map, [Field | Rest]) ->
     case maps:find(Field, Map) of
@@ -305,7 +328,7 @@ validate_positive_integer_fields(Map, [Field | Rest]) ->
 %%% Parsing and storage
 %%% ===================================================================
 
--spec parse_and_store(binary()) -> ok | {error, term()}.
+-spec parse_and_store(binary()) -> ok | {error, validation_error()}.
 parse_and_store(Bin) ->
     try json:decode(Bin) of
         Parsed when is_map(Parsed) ->
@@ -317,7 +340,7 @@ parse_and_store(Bin) ->
             {error, {json_parse, Reason}}
     end.
 
--spec store_config(map()) -> ok | {error, term()}.
+-spec store_config(map()) -> ok | {error, {validation, validation_detail()}}.
 store_config(RawConfig) ->
     Config = atomize_keys(RawConfig),
     case validate(Config) of
