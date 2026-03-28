@@ -42,6 +42,11 @@ init(Config) ->
                            erlang:system_time(millisecond)}),
     ets:insert(MetaTable, {coordinator_pid, self()}),
     Behavior = maps:get(behavior, Config, default_behavior()),
+    %% Memory pressure simulation: write flag to meta table
+    case maps:get(memory_pressure, Behavior, false) of
+        true -> ets:insert(MetaTable, {memory_pressure, true});
+        false -> ok
+    end,
     Data = #data{
         engine_id = EngineId,
         meta_table = MetaTable,
@@ -67,10 +72,11 @@ ready({call, From}, {set_behavior, NewBehavior}, Data) ->
 
 ready(internal, {stream_tokens, CallerPid, RequestId}, #data{behavior = Beh} = Data) ->
     Tokens = maps:get(tokens, Beh, [<<"Hello">>, <<"from">>, <<"Loom">>]),
-    Delay = maps:get(token_delay, Beh, 0),
+    Delay = maps:get(delay_ms, Beh, maps:get(token_delay, Beh, 0)),
     Error = maps:get(error, Beh, undefined),
+    FailAfter = maps:get(fail_after, Beh, undefined),
     spawn(fun() ->
-        stream_tokens(CallerPid, RequestId, Tokens, Delay, Error)
+        stream_tokens(CallerPid, RequestId, Tokens, Delay, Error, FailAfter, 0)
     end),
     {keep_state, Data};
 
@@ -83,21 +89,32 @@ terminate(_Reason, _State, #data{meta_table = MetaTable}) ->
 
 %%% Internal
 
-stream_tokens(CallerPid, RequestId, Tokens, Delay, Error) ->
-    lists:foreach(fun(Token) ->
-        case Delay > 0 of
-            true -> timer:sleep(Delay);
-            false -> ok
-        end,
-        CallerPid ! {loom_token, RequestId, Token, false}
-    end, Tokens),
+stream_tokens(CallerPid, RequestId, [], _Delay, Error, _FailAfter, _Count) ->
     case Error of
         {Code, Message} ->
             CallerPid ! {loom_error, RequestId, Code, Message};
         undefined ->
             CallerPid ! {loom_done, RequestId,
-                         #{tokens => length(Tokens), time_ms => 0}}
+                         #{tokens => 0, time_ms => 0}}
+    end;
+stream_tokens(CallerPid, RequestId, [Token | Rest], Delay, Error, FailAfter, Count) ->
+    %% Check fail_after: if we've emitted enough tokens, emit error and stop
+    case FailAfter of
+        N when is_integer(N), Count >= N ->
+            CallerPid ! {loom_error, RequestId, <<"fail_after">>,
+                         <<"Simulated failure after ",
+                           (integer_to_binary(N))/binary, " tokens">>};
+        _ ->
+            apply_delay(Delay),
+            CallerPid ! {loom_token, RequestId, Token, false},
+            stream_tokens(CallerPid, RequestId, Rest, Delay, Error, FailAfter, Count + 1)
     end.
+
+apply_delay(0) -> ok;
+apply_delay(N) when is_integer(N), N > 0 -> timer:sleep(N);
+apply_delay({Min, Max}) when is_integer(Min), is_integer(Max), Min =< Max ->
+    timer:sleep(Min + rand:uniform(Max - Min + 1) - 1);
+apply_delay(_) -> ok.
 
 default_behavior() ->
     #{tokens => [<<"Hello">>, <<"from">>, <<"Loom">>],
