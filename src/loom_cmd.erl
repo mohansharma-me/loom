@@ -52,8 +52,7 @@ run_with_timeout(Cmd, Timeout) ->
         MaybeOsPid = receive {Ref, os_pid, P} -> P after 0 -> undefined end,
         flush_ref(Ref),
         loom_os:force_kill(MaybeOsPid),
-        ?LOG_WARNING("loom_cmd: command timed out after ~bms: ~s",
-                     [Timeout, Cmd]),
+        ?LOG_WARNING(#{msg => command_timed_out, timeout_ms => Timeout, command => Cmd}),
         {error, timeout}
     end.
 
@@ -79,8 +78,7 @@ wait_result(Ref, MonRef, Pid, OsPid, Cmd, OrigTimeout, Remaining) ->
         demonitor(MonRef, [flush]),
         flush_ref(Ref),
         loom_os:force_kill(OsPid),
-        ?LOG_WARNING("loom_cmd: command timed out after ~bms: ~s",
-                     [OrigTimeout, Cmd]),
+        ?LOG_WARNING(#{msg => command_timed_out, timeout_ms => OrigTimeout, command => Cmd}),
         {error, timeout}
     end.
 

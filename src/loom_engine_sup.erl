@@ -38,15 +38,14 @@ start_link(Config) ->
         ok ->
             EngineId = maps:get(engine_id, Config),
             Name = sup_name(EngineId),
-            ?LOG_INFO("loom_engine_sup: starting engine_id=~s "
-                      "gpus=~p max_restarts=~b/~bs",
-                      [EngineId,
-                       maps:get(gpus, Config, []),
-                       maps:get(max_restarts, Config, 5),
-                       maps:get(max_period, Config, 60)]),
+            ?LOG_INFO(#{msg => starting,
+                       engine_id => EngineId,
+                       gpus => maps:get(gpus, Config, []),
+                       max_restarts => maps:get(max_restarts, Config, 5),
+                       max_period => maps:get(max_period, Config, 60)}),
             supervisor:start_link({local, Name}, ?MODULE, Config);
         {error, _} = Err ->
-            ?LOG_ERROR("loom_engine_sup: config validation failed: ~p", [Err]),
+            ?LOG_ERROR(#{msg => config_validation_failed, error => Err}),
             Err
     end.
 
@@ -59,8 +58,8 @@ start_monitor(EngineId, GpuOpts) ->
         {ok, GpuId} ->
             start_monitor_with_lookup(EngineId, GpuId, GpuOpts);
         error ->
-            ?LOG_ERROR("loom_engine_sup: start_monitor called without gpu_id "
-                       "engine_id=~s opts=~p", [EngineId, GpuOpts]),
+            ?LOG_ERROR(#{msg => start_monitor_missing_gpu_id,
+                       engine_id => EngineId, opts => GpuOpts}),
             {error, {missing_gpu_id, GpuOpts}}
     end.
 
@@ -93,14 +92,16 @@ start_monitor_with_lookup(EngineId, GpuId, GpuOpts) ->
     end,
     case OwnerResult of
         {ok, CoordPid} ->
-            ?LOG_INFO("loom_engine_sup: starting gpu_monitor engine_id=~s "
-                      "gpu_id=~p coordinator=~p",
-                      [EngineId, GpuId, CoordPid]),
+            ?LOG_INFO(#{msg => starting_gpu_monitor,
+                       engine_id => EngineId,
+                       gpu_id => GpuId,
+                       coordinator => CoordPid}),
             loom_gpu_monitor:start_link(GpuOpts#{coordinator => CoordPid});
         {error, Reason} ->
-            ?LOG_ERROR("loom_engine_sup: coordinator lookup failed for "
-                       "engine_id=~s gpu_id=~p reason=~p",
-                       [EngineId, GpuId, Reason]),
+            ?LOG_ERROR(#{msg => coordinator_lookup_failed,
+                       engine_id => EngineId,
+                       gpu_id => GpuId,
+                       reason => Reason}),
             {error, coordinator_not_found}
     end.
 
@@ -125,13 +126,12 @@ init(Config) ->
     DrainTimeout = maps:get(drain_timeout_ms, Config, 30000),
     CoordShutdown = DrainTimeout + 5000,
 
-    ?LOG_INFO("loom_engine_sup: building coordinator child spec "
-              "engine_id=~s command=~s model=~s backend=~s shutdown=~bms",
-              [EngineId,
-               maps:get(command, CoordConfig),
-               maps:get(model, CoordConfig),
-               maps:get(backend, CoordConfig),
-               CoordShutdown]),
+    ?LOG_INFO(#{msg => building_coordinator_child_spec,
+               engine_id => EngineId,
+               command => maps:get(command, CoordConfig),
+               model => maps:get(model, CoordConfig),
+               backend => maps:get(backend, CoordConfig),
+               shutdown_ms => CoordShutdown}),
 
     CoordChild = #{
         id => coordinator,
@@ -231,9 +231,9 @@ validate_optional_fields(Config) ->
 -spec build_coordinator_config(map()) -> map().
 build_coordinator_config(Config) ->
     EngineId = maps:get(engine_id, Config),
-    ?LOG_INFO("loom_engine_sup: mapping coordinator config for engine_id=~s: "
-              "adapter_cmd->command, adapter_args->args",
-              [EngineId]),
+    ?LOG_INFO(#{msg => mapping_coordinator_config,
+               engine_id => EngineId,
+               mapping => "adapter_cmd->command, adapter_args->args"}),
     Base = #{
         engine_id => EngineId,
         command => maps:get(adapter_cmd, Config),
