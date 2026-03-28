@@ -207,13 +207,16 @@ ready({call, From}, get_state, _Data) ->
     {keep_state_and_data, [{reply, From, ready}]};
 ready({call, From}, get_os_pid, #data{os_pid = OsPid}) ->
     {keep_state_and_data, [{reply, From, OsPid}]};
-ready({call, From}, {send, Msg}, #data{port = Port} = Data) ->
+ready({call, From}, {send, Msg}, #data{port = Port, opts = Opts} = Data) ->
     case Port of
         undefined ->
             {keep_state_and_data, [{reply, From, {error, not_ready}}]};
         _ ->
             try loom_protocol:encode(Msg) of
                 Encoded ->
+                    telemetry:execute([loom, port, message_out],
+                        #{byte_size => byte_size(Encoded)},
+                        #{engine_id => maps:get(engine_id, Opts, undefined)}),
                     try port_command(Port, Encoded) of
                         true -> {keep_state, Data, [{reply, From, ok}]}
                     catch
@@ -357,7 +360,10 @@ handle_line(RawLine, State, #data{line_buf = Buf} = Data) ->
 
 %% @doc Decode a complete line and dispatch based on current state and message type.
 -spec dispatch_line(binary(), atom(), #data{}) -> gen_statem:event_handler_result(atom()).
-dispatch_line(Line, State, #data{ref = Ref} = Data) ->
+dispatch_line(Line, State, #data{ref = Ref, opts = Opts} = Data) ->
+    telemetry:execute([loom, port, message_in],
+        #{byte_size => byte_size(Line)},
+        #{engine_id => maps:get(engine_id, Opts, undefined)}),
     case loom_protocol:decode(Line) of
         {ok, {heartbeat, _Status, _Detail}} when State =:= spawning ->
             {next_state, loading, Data};

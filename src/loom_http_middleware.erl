@@ -1,7 +1,7 @@
 -module(loom_http_middleware).
 -behaviour(cowboy_middleware).
 
--export([execute/2]).
+-export([execute/2, emit_request_start/3, emit_request_stop/5]).
 
 -include_lib("kernel/include/logger.hrl").
 
@@ -16,12 +16,29 @@ execute(Req0, Env) ->
     Method = cowboy_req:method(Req2),
     Path = cowboy_req:path(Req2),
     ?LOG_INFO(#{msg => http_request, method => Method, path => Path, request_id => RequestId}),
+    emit_request_start(Method, Path, RequestId),
     case validate_content_type(Method, Req2) of
         ok ->
             {ok, Req2, Env};
         {error, Req3} ->
             {stop, Req3}
     end.
+
+%%====================================================================
+%% Telemetry helpers
+%%====================================================================
+
+-spec emit_request_start(binary(), binary(), binary()) -> ok.
+emit_request_start(Method, Path, RequestId) ->
+    telemetry:execute([loom, http, request_start],
+        #{system_time => erlang:system_time(millisecond)},
+        #{method => Method, path => Path, request_id => RequestId}).
+
+-spec emit_request_stop(non_neg_integer(), binary(), binary(), binary(), integer()) -> ok.
+emit_request_stop(Duration, Method, Path, RequestId, Status) ->
+    telemetry:execute([loom, http, request_stop],
+        #{duration => Duration},
+        #{method => Method, path => Path, request_id => RequestId, status => Status}).
 
 %%% Internal
 

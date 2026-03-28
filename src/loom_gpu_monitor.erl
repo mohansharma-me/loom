@@ -236,6 +236,14 @@ do_poll(#data{gpu_id = GpuId, backend_mod = Mod,
     case Mod:poll(BState) of
         {ok, Metrics, NewBState} ->
             log_metrics(GpuId, Metrics),
+            %% ASSUMPTION: engine_id is available in process metadata set during init/1.
+            %% We use the gpu_id from the record which is always available.
+            telemetry:execute([loom, gpu, poll],
+                #{gpu_util => maps:get(gpu_util, Metrics),
+                  mem_used_gb => maps:get(mem_used_gb, Metrics),
+                  mem_total_gb => maps:get(mem_total_gb, Metrics),
+                  temperature_c => maps:get(temperature_c, Metrics)},
+                #{engine_id => get_engine_id_from_metadata(), gpu_id => GpuId}),
             Data1 = Data#data{
                 backend_state      = NewBState,
                 latest_metrics     = Metrics,
@@ -431,6 +439,13 @@ backend_module(Other)  -> {error, {unknown_backend, Other, [nvidia, apple, mock]
 schedule_poll(#data{poll_interval_ms = Interval} = Data) ->
     TRef = erlang:send_after(Interval, self(), poll),
     Data#data{timer_ref = TRef}.
+
+-spec get_engine_id_from_metadata() -> term().
+get_engine_id_from_metadata() ->
+    case logger:get_process_metadata() of
+        #{engine_id := EngineId} -> EngineId;
+        _ -> undefined
+    end.
 
 -spec cancel_timer(reference() | undefined) -> ok.
 cancel_timer(undefined) -> ok;
