@@ -1,5 +1,6 @@
 -module(loom_sup).
 -behaviour(supervisor).
+-dialyzer(no_underspecs).
 
 -export([start_link/0, init/1]).
 

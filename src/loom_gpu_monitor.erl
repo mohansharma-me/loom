@@ -15,6 +15,7 @@
 %%%-------------------------------------------------------------------
 -module(loom_gpu_monitor).
 -behaviour(gen_server).
+-dialyzer(no_underspecs).
 
 %% Domain types
 -type threshold_config() :: #{

@@ -1,5 +1,6 @@
 -module(loom_http_server).
 -behaviour(gen_server).
+-dialyzer(no_underspecs).
 
 %% ASSUMPTION: This gen_server is a lifecycle wrapper only. It does NOT sit in
 %% the HTTP request path. Cowboy manages its own process tree under ranch_sup.

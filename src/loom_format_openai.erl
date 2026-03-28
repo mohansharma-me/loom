@@ -1,4 +1,5 @@
 -module(loom_format_openai).
+-dialyzer(no_underspecs).
 
 -export([
     parse_request/1,

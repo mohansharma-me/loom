@@ -1,4 +1,5 @@
 -module(loom_http_util).
+-dialyzer(no_underspecs).
 
 %% ASSUMPTION: OTP >= 26 is required for binary:encode_hex/2 with lowercase option.
 %% The rebar.config specifies {minimum_otp_vsn, "27"}, so this is safe.
@@ -34,7 +35,9 @@ unix_timestamp() ->
 %% ASSUMPTION: default_config/0 carries only handler-specific defaults
 %% (timeouts, body size). Server settings (port, ip, max_connections) come from
 %% loom_config:get_server/0, which merges its own hardcoded defaults.
--spec default_config() -> map().
+-spec default_config() ->
+    #{max_body_size := pos_integer(), inactivity_timeout := pos_integer(),
+      generate_timeout := pos_integer()}.
 default_config() ->
     #{
         max_body_size => 10485760,

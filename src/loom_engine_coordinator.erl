@@ -14,6 +14,7 @@
 %%%-------------------------------------------------------------------
 -module(loom_engine_coordinator).
 -behaviour(gen_statem).
+-dialyzer(no_underspecs).
 
 %% Domain types
 -type engine_id() :: binary().

@@ -22,6 +22,7 @@
 %%%-------------------------------------------------------------------
 -module(loom_engine_sup).
 -behaviour(supervisor).
+-dialyzer(no_underspecs).
 
 -export([start_link/1, start_monitor/2, sup_name/1]).
 -export([init/1]).

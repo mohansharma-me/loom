@@ -1,5 +1,6 @@
 -module(loom_handler_chat).
 -behaviour(cowboy_loop).
+-dialyzer(no_underspecs).
 
 -export([init/2, info/3, terminate/3]).
 

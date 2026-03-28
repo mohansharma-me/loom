@@ -11,6 +11,10 @@
 %%%-------------------------------------------------------------------
 -module(loom_gpu_backend_mock).
 -behaviour(loom_gpu_backend).
+-dialyzer(no_underspecs).
+%% ASSUMPTION: detect/0 spec is boolean() to match loom_gpu_backend
+%% behaviour contract, but mock backend always returns true.
+-dialyzer({nowarn_function, detect/0}).
 
 -export([detect/0, init/1, poll/1, terminate/1, default_thresholds/0]).
 

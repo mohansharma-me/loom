@@ -16,6 +16,7 @@
 %%%-------------------------------------------------------------------
 -module(loom_gpu_backend_nvidia).
 -behaviour(loom_gpu_backend).
+-dialyzer(no_underspecs).
 
 -export([detect/0, init/1, poll/1, terminate/1, default_thresholds/0]).
 -export([parse_nvidia_csv/1]).

@@ -16,6 +16,7 @@
 %%%-------------------------------------------------------------------
 -module(loom_port).
 -behaviour(gen_statem).
+-dialyzer(no_underspecs).
 
 %% Domain types
 -type port_state() :: spawning | loading | ready | shutting_down.
