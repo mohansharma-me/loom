@@ -35,17 +35,19 @@ all() ->
     [client_disconnect_test].
 
 init_per_suite(Config) ->
-    ok = application:load(loom),
-    %% Load config so HTTP server starts. Use minimal.json as base.
-    ok = loom_config:load(fixture_path("minimal.json")),
-
-    %% ASSUMPTION: CT runs init_per_suite and test cases in different processes.
-    %% The loom_config ETS table is owned by the calling process. When
-    %% init_per_suite's process dies, the table would be deleted. Transfer
+    %% Load config and start app. ensure_all_started is idempotent.
+    case ets:info(loom_config) of
+        undefined -> ok = loom_config:load(fixture_path("minimal.json"));
+        _ -> ok
+    end,
+    %% CT runs init_per_suite in a temporary process. If that process owns
+    %% the loom_config ETS table, the table dies with the process. Transfer
     %% ownership to a keeper process that persists across the suite.
-    KeeperPid = spawn_ets_keeper(),
-    ets:give_away(loom_config, KeeperPid, []),
-
+    KeeperPid = spawn(fun() -> receive stop -> ok end end),
+    case ets:info(loom_config, owner) of
+        Pid when Pid =:= self() -> ets:give_away(loom_config, KeeperPid, []);
+        _ -> ok
+    end,
     {ok, _} = application:ensure_all_started(loom),
 
     %% The app starts its own engine supervisor for fixture_engine.
@@ -81,11 +83,10 @@ init_per_suite(Config) ->
     HttpPort = ranch:get_port(loom_http_listener),
 
     [{engine_id, FirstEngine}, {sup_pid, SupPid},
-     {http_port, HttpPort}, {keeper_pid, KeeperPid} | Config].
+     {http_port, HttpPort} | Config].
 
 end_per_suite(Config) ->
-    %% Stop our engine supervisor first, before tearing down the app.
-    %% Use kill to avoid hanging on drain timeout during cleanup.
+    %% Stop our engine supervisor. Don't stop the app — other suites share the node.
     case ?config(sup_pid, Config) of
         Pid when is_pid(Pid) ->
             case is_process_alive(Pid) of
@@ -96,13 +97,6 @@ end_per_suite(Config) ->
             end;
         _ -> ok
     end,
-    application:stop(loom),
-    %% Kill the ETS keeper process
-    case ?config(keeper_pid, Config) of
-        KPid when is_pid(KPid) -> exit(KPid, kill);
-        _ -> ok
-    end,
-    loom_test_helpers:cleanup_ets(),
     ok.
 
 init_per_testcase(_TestCase, Config) ->
@@ -218,16 +212,6 @@ mock_adapter_path() ->
 
 python_cmd() ->
     os:find_executable("python3").
-
-%% @doc Spawn a process that simply waits forever, used to hold ETS
-%% table ownership across CT callback boundaries.
-spawn_ets_keeper() ->
-    spawn(fun ets_keeper_loop/0).
-
-ets_keeper_loop() ->
-    receive
-        stop -> ok
-    end.
 
 wait_status(EngineId, Status, Timeout) when Timeout > 0 ->
     case catch loom_engine_coordinator:get_status(EngineId) of

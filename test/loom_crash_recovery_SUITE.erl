@@ -50,16 +50,17 @@ groups() ->
     ]}].
 
 init_per_suite(Config) ->
-    ok = application:load(loom),
-    %% Pre-load a minimal config so the loom app can start its HTTP server.
-    %% We don't rely on app-started engines — we start supervisors directly.
-    ok = loom_config:load(fixture_path("minimal.json")),
+    %% Pre-load config and start loom app. ensure_all_started is idempotent
+    %% if the app is already running from a prior suite.
+    case ets:info(loom_config) of
+        undefined -> ok = loom_config:load(fixture_path("minimal.json"));
+        _ -> ok
+    end,
     {ok, _} = application:ensure_all_started(loom),
     Config.
 
 end_per_suite(_Config) ->
-    application:stop(loom),
-    loom_test_helpers:cleanup_ets(),
+    %% Don't stop the app — other suites may share this node.
     ok.
 
 init_per_group(default, Config) ->
