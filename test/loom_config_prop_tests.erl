@@ -7,14 +7,10 @@
 %%====================================================================
 
 merge_override_wins_test() ->
-    ?assert(proper:quickcheck(prop_merge_override_wins(), [
-        {numtests, 200}, {to_file, user}
-    ])).
+    assert_property(prop_merge_override_wins(), 200).
 
 validation_rejects_missing_required_test() ->
-    ?assert(proper:quickcheck(prop_validation_rejects_missing_required(), [
-        {numtests, 200}, {to_file, user}
-    ])).
+    assert_property(prop_validation_rejects_missing_required(), 200).
 
 %%====================================================================
 %% Properties
@@ -40,53 +36,68 @@ prop_merge_override_wins() ->
                     }
                 ]
             },
-            {ok, Path} = loom_test_helpers:write_temp_config(Config),
-            cleanup_ets(),
-            try
-                ok = loom_config:load(Path),
+            loom_test_helpers:with_config(Config, fun() ->
                 {ok, Engine} = loom_config:get_engine(<<"test_engine">>),
                 Coord = maps:get(coordinator, Engine, #{}),
                 MaxConc = maps:get(max_concurrent, Coord, undefined),
                 MaxConc =:= OverrideMaxConc
+            end)
+        end).
+
+%% Property: A config missing any required engine field is rejected with
+%% a specific validation error.
+%% ASSUMPTION: Required engine fields are name, backend, and model.
+%% loom_config:load/1 returns {error, {validation, {missing_field, engine, Field}}}
+%% when a required field is absent.
+prop_validation_rejects_missing_required() ->
+    ?FORALL({MissingField, ExtraFields},
+            {oneof([<<"name">>, <<"backend">>, <<"model">>]),
+             gen_extra_engine_fields()},
+        begin
+            FullEngine = maps:merge(#{
+                <<"name">> => <<"bad_engine">>,
+                <<"model">> => <<"test-model">>,
+                <<"backend">> => <<"mock">>
+            }, ExtraFields),
+            BrokenEngine = maps:remove(MissingField, FullEngine),
+            Config = #{<<"engines">> => [BrokenEngine]},
+            {ok, Path} = loom_test_helpers:write_temp_config(Config),
+            loom_test_helpers:cleanup_ets(),
+            try
+                Result = loom_config:load(Path),
+                case Result of
+                    {error, {validation, {missing_field, engine, _}}} -> true;
+                    ok -> false;
+                    Other -> error({unexpected_result, Other,
+                                    {expected_missing_field, MissingField}})
+                end
             after
-                cleanup_ets(),
+                loom_test_helpers:cleanup_ets(),
                 file:delete(Path)
             end
         end).
 
-%% Property: A config missing any required engine field is rejected.
-%% ASSUMPTION: Required engine fields are name, backend, and model.
-%% The config uses list-of-engines format. Missing any field triggers
-%% a validation error from loom_config:load/1.
-prop_validation_rejects_missing_required() ->
-    ?FORALL(MissingField, oneof([<<"name">>, <<"backend">>, <<"model">>]),
-        begin
-            FullEngine = #{
-                <<"name">> => <<"bad_engine">>,
-                <<"model">> => <<"test-model">>,
-                <<"backend">> => <<"mock">>
-            },
-            BrokenEngine = maps:remove(MissingField, FullEngine),
-            Config = #{
-                <<"engines">> => [BrokenEngine]
-            },
-            {ok, Path} = loom_test_helpers:write_temp_config(Config),
-            cleanup_ets(),
-            try
-                Result = loom_config:load(Path),
-                Result =/= ok
-            after
-                cleanup_ets(),
-                file:delete(Path)
-            end
-        end).
+%%====================================================================
+%% Generators
+%%====================================================================
+
+gen_extra_engine_fields() ->
+    oneof([
+        #{},
+        #{<<"coordinator">> => #{<<"max_concurrent">> => 10}},
+        #{<<"gpu_monitor">> => #{<<"poll_interval_ms">> => 5000}}
+    ]).
 
 %%====================================================================
 %% Internal
 %%====================================================================
 
-cleanup_ets() ->
-    case ets:info(loom_config) of
-        undefined -> ok;
-        _ -> ets:delete(loom_config)
+assert_property(Prop, NumTests) ->
+    Result = proper:quickcheck(Prop, [{numtests, NumTests}, {to_file, user}]),
+    case Result of
+        true -> ok;
+        false ->
+            CEx = proper:counterexample(),
+            ?assertEqual({property_passed, no_counterexample},
+                         {property_failed, CEx})
     end.

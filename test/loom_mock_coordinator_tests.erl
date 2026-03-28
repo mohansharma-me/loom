@@ -6,8 +6,7 @@ fail_after_test() ->
         engine_id => <<"fail_test">>,
         behavior => #{
             tokens => [<<"a">>, <<"b">>, <<"c">>, <<"d">>],
-            fail_after => 2,
-            token_delay => 0
+            fail_after => 2
         }
     }),
     {ok, ReqId} = gen_statem:call(Pid, {generate, <<"test">>, #{}}),
@@ -22,8 +21,7 @@ delay_ms_test() ->
         engine_id => <<"delay_test">>,
         behavior => #{
             tokens => [<<"x">>, <<"y">>],
-            delay_ms => {50, 100},
-            token_delay => 0
+            delay_ms => {50, 100}
         }
     }),
     T0 = erlang:monotonic_time(millisecond),
@@ -47,4 +45,15 @@ memory_pressure_test() ->
     %% Memory pressure is visible via the meta table
     MetaTable = loom_engine_coordinator:meta_table_name(<<"pressure_test">>),
     [{memory_pressure, true}] = ets:lookup(MetaTable, memory_pressure),
+    loom_mock_coordinator:stop(Pid).
+
+memory_pressure_negative_test() ->
+    {ok, Pid} = loom_mock_coordinator:start_link(#{
+        engine_id => <<"no_pressure_test">>,
+        behavior => #{
+            tokens => [<<"hi">>]
+        }
+    }),
+    MetaTable = loom_engine_coordinator:meta_table_name(<<"no_pressure_test">>),
+    ?assertEqual([], ets:lookup(MetaTable, memory_pressure)),
     loom_mock_coordinator:stop(Pid).

@@ -7,9 +7,10 @@
 %%====================================================================
 
 encode_decode_roundtrip_test() ->
-    ?assert(proper:quickcheck(prop_encode_decode_roundtrip(), [
-        {numtests, 200}, {max_size, 8}, {to_file, user}
-    ])).
+    assert_property(prop_encode_decode_roundtrip(), 200, [{max_size, 8}]).
+
+encode_decode_escaping_test() ->
+    assert_property(prop_encode_decode_escaping(), 200, []).
 
 %%====================================================================
 %% Properties
@@ -19,12 +20,26 @@ encode_decode_roundtrip_test() ->
 %% produces a structurally equivalent value.
 %% ASSUMPTION: Atoms encode as strings, so decode returns binaries.
 %% Integer keys become binary keys. We normalize before comparison.
+%% ASSUMPTION: Float values generated as N/10.0 may decode as integers
+%% when they have no fractional part (e.g., 100.0 -> 100). The normalize
+%% function handles this because both integer and float pass through
+%% unchanged, and JSON decoders may return either form for whole numbers.
 prop_encode_decode_roundtrip() ->
     ?FORALL(Value, json_value(),
         begin
             Encoded = loom_json:encode(Value),
             Decoded = loom_json:decode(Encoded),
             normalize(Value) =:= normalize(Decoded)
+        end).
+
+%% Property: Strings containing JSON-special characters (backslash,
+%% double-quote) survive encode -> decode round-trip.
+prop_encode_decode_escaping() ->
+    ?FORALL(Value, gen_string_with_escapes(),
+        begin
+            Encoded = loom_json:encode(Value),
+            Decoded = loom_json:decode(Encoded),
+            Value =:= Decoded
         end).
 
 %%====================================================================
@@ -58,6 +73,16 @@ gen_safe_binary() ->
     ?LET(Chars, list(choose(32, 126)),
         list_to_binary([C || C <- Chars, C =/= $\\, C =/= $"])).
 
+%% Generate a binary that specifically includes JSON-special characters.
+gen_string_with_escapes() ->
+    ?LET(Chars, non_empty(list(oneof([
+        choose(32, 126),
+        $\\,
+        $",
+        $\n,
+        $\t
+    ]))), list_to_binary(Chars)).
+
 %%====================================================================
 %% Normalization
 %%====================================================================
@@ -80,3 +105,18 @@ normalize(M) when is_map(M) ->
 normalize_key(K) when is_atom(K) -> atom_to_binary(K);
 normalize_key(K) when is_integer(K) -> integer_to_binary(K);
 normalize_key(K) when is_binary(K) -> K.
+
+%%====================================================================
+%% Internal
+%%====================================================================
+
+assert_property(Prop, NumTests, ExtraOpts) ->
+    Opts = [{numtests, NumTests}, {to_file, user}] ++ ExtraOpts,
+    Result = proper:quickcheck(Prop, Opts),
+    case Result of
+        true -> ok;
+        false ->
+            CEx = proper:counterexample(),
+            ?assertEqual({property_passed, no_counterexample},
+                         {property_failed, CEx})
+    end.

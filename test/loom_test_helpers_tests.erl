@@ -27,3 +27,25 @@ wait_for_status_immediate_test() ->
 wait_for_status_timeout_test() ->
     {error, timeout} = loom_test_helpers:wait_for_status(
         fun() -> starting end, ready, 100, 25).
+
+capture_log_test() ->
+    {_Result, Events} = loom_test_helpers:capture_log(fun() ->
+        logger:warning("test warning"),
+        ok
+    end),
+    ?assert(length(Events) > 0).
+
+with_config_test() ->
+    Config = #{
+        <<"engines">> => [
+            #{<<"name">> => <<"test_wc">>,
+              <<"model">> => <<"m">>,
+              <<"backend">> => <<"mock">>}
+        ]
+    },
+    Result = loom_test_helpers:with_config(Config, fun() ->
+        loom_config:get_engine(<<"test_wc">>)
+    end),
+    ?assertMatch({ok, _}, Result),
+    %% ETS should be cleaned up
+    ?assertEqual(undefined, ets:info(loom_config)).

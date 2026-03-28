@@ -16,7 +16,11 @@
 }).
 
 %% behavior map:
-%% #{tokens => [binary()], token_delay => non_neg_integer(),
+%% #{tokens => [binary()],
+%%   delay_ms => non_neg_integer() | {Min :: non_neg_integer(), Max :: non_neg_integer()},
+%%   token_delay => non_neg_integer(),  %% legacy; delay_ms takes precedence
+%%   fail_after => non_neg_integer() | undefined,
+%%   memory_pressure => boolean(),
 %%   error => {binary(), binary()} | undefined,
 %%   generate_response => {ok, binary()} | {error, atom()}}
 
@@ -72,11 +76,20 @@ ready({call, From}, {set_behavior, NewBehavior}, Data) ->
 
 ready(internal, {stream_tokens, CallerPid, RequestId}, #data{behavior = Beh} = Data) ->
     Tokens = maps:get(tokens, Beh, [<<"Hello">>, <<"from">>, <<"Loom">>]),
+    %% ASSUMPTION: delay_ms takes precedence over legacy token_delay key.
+    %% Both are supported for backward compatibility. delay_ms also accepts
+    %% {Min, Max} tuple for randomized delays.
     Delay = maps:get(delay_ms, Beh, maps:get(token_delay, Beh, 0)),
     Error = maps:get(error, Beh, undefined),
     FailAfter = maps:get(fail_after, Beh, undefined),
-    spawn(fun() ->
-        stream_tokens(CallerPid, RequestId, Tokens, Delay, Error, FailAfter, 0)
+    spawn_link(fun() ->
+        try
+            stream_tokens(CallerPid, RequestId, Tokens, Delay, Error, FailAfter, 0)
+        catch
+            Class:Reason ->
+                CallerPid ! {loom_error, RequestId, <<"mock_crash">>,
+                             iolist_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+        end
     end),
     {keep_state, Data};
 
@@ -84,18 +97,20 @@ ready(info, _Msg, Data) ->
     {keep_state, Data}.
 
 terminate(_Reason, _State, #data{meta_table = MetaTable}) ->
-    catch ets:delete(MetaTable),
+    try ets:delete(MetaTable)
+    catch error:badarg -> ok
+    end,
     ok.
 
 %%% Internal
 
-stream_tokens(CallerPid, RequestId, [], _Delay, Error, _FailAfter, _Count) ->
+stream_tokens(CallerPid, RequestId, [], _Delay, Error, _FailAfter, Count) ->
     case Error of
         {Code, Message} ->
             CallerPid ! {loom_error, RequestId, Code, Message};
         undefined ->
             CallerPid ! {loom_done, RequestId,
-                         #{tokens => 0, time_ms => 0}}
+                         #{tokens => Count, time_ms => 0}}
     end;
 stream_tokens(CallerPid, RequestId, [Token | Rest], Delay, Error, FailAfter, Count) ->
     %% Check fail_after: if we've emitted enough tokens, emit error and stop
@@ -114,9 +129,9 @@ apply_delay(0) -> ok;
 apply_delay(N) when is_integer(N), N > 0 -> timer:sleep(N);
 apply_delay({Min, Max}) when is_integer(Min), is_integer(Max), Min =< Max ->
     timer:sleep(Min + rand:uniform(Max - Min + 1) - 1);
-apply_delay(_) -> ok.
+apply_delay(Invalid) -> error({invalid_delay, Invalid}).
 
 default_behavior() ->
     #{tokens => [<<"Hello">>, <<"from">>, <<"Loom">>],
-      token_delay => 0,
+      delay_ms => 0,
       error => undefined}.

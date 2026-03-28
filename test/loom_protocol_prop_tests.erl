@@ -7,19 +7,16 @@
 %%====================================================================
 
 encode_produces_valid_json_test() ->
-    ?assert(proper:quickcheck(prop_encode_produces_valid_json(), [
-        {numtests, 200}, {to_file, user}
-    ])).
+    assert_property(prop_encode_produces_valid_json(), 200).
 
 encode_type_field_correct_test() ->
-    ?assert(proper:quickcheck(prop_encode_type_field_correct(), [
-        {numtests, 200}, {to_file, user}
-    ])).
+    assert_property(prop_encode_type_field_correct(), 200).
 
 buffer_chunking_test() ->
-    ?assert(proper:quickcheck(prop_buffer_chunking(), [
-        {numtests, 200}, {to_file, user}
-    ])).
+    assert_property(prop_buffer_chunking(), 200).
+
+decode_no_crash_test() ->
+    assert_property(prop_decode_no_crash(), 200).
 
 %%====================================================================
 %% Properties
@@ -32,12 +29,12 @@ prop_encode_produces_valid_json() ->
     ?FORALL(Msg, outbound_msg(),
         begin
             Encoded = loom_protocol:encode(Msg),
-            %% Must end with newline
-            ?assertEqual($\n, binary:last(Encoded)),
-            %% Strip trailing newline and decode
-            Line = binary:part(Encoded, 0, byte_size(Encoded) - 1),
-            Map = loom_json:decode(Line),
-            is_map(Map)
+            binary:last(Encoded) =:= $\n andalso
+            begin
+                Line = binary:part(Encoded, 0, byte_size(Encoded) - 1),
+                Map = loom_json:decode(Line),
+                is_map(Map)
+            end
         end).
 
 %% Property: The "type" field in encoded JSON matches the outbound message type.
@@ -57,9 +54,7 @@ prop_buffer_chunking() ->
     ?FORALL({Msgs, ChunkSizes}, {non_empty(list(outbound_msg())), non_empty(list(pos_integer()))},
         begin
             Encoded = iolist_to_binary([loom_protocol:encode(M) || M <- Msgs]),
-            %% Feed all at once
             {AllLines, _} = loom_protocol:feed(Encoded, loom_protocol:new_buffer()),
-            %% Feed in chunks
             Chunks = chunk_binary(Encoded, ChunkSizes),
             {ChunkedLines, _} = lists:foldl(
                 fun(Chunk, {AccLines, Buf}) ->
@@ -69,6 +64,22 @@ prop_buffer_chunking() ->
                 {[], loom_protocol:new_buffer()},
                 Chunks),
             AllLines =:= ChunkedLines
+        end).
+
+%% Property: For every outbound message, encoding then decoding through the
+%% protocol round-trips without crashing. Decode returns {ok, _} or {error, _}.
+%% ASSUMPTION: Outbound messages encode to JSON that is not a valid inbound
+%% message type, so decode will return {error, {unknown_type, _}} for most
+%% message types. The property verifies no crash, not semantic correctness.
+prop_decode_no_crash() ->
+    ?FORALL(Msg, outbound_msg(),
+        begin
+            Encoded = loom_protocol:encode(Msg),
+            Line = binary:part(Encoded, 0, byte_size(Encoded) - 1),
+            case loom_protocol:decode(Line) of
+                {ok, _} -> true;
+                {error, _} -> true
+            end
         end).
 
 %%====================================================================
@@ -113,14 +124,12 @@ gen_top_p() ->
 %% Helpers
 %%====================================================================
 
-%% Map outbound message to expected JSON type field value.
 expected_type({health}) -> <<"health">>;
 expected_type({memory}) -> <<"memory">>;
 expected_type({shutdown}) -> <<"shutdown">>;
 expected_type({cancel, _}) -> <<"cancel">>;
 expected_type({generate, _, _, _}) -> <<"generate">>.
 
-%% Split a binary into chunks of the given sizes (cycling if needed).
 chunk_binary(<<>>, _Sizes) -> [];
 chunk_binary(Bin, []) -> [Bin];
 chunk_binary(Bin, [Size | Rest]) ->
@@ -129,4 +138,14 @@ chunk_binary(Bin, [Size | Rest]) ->
         false ->
             <<Chunk:Size/binary, Remaining/binary>> = Bin,
             [Chunk | chunk_binary(Remaining, Rest ++ [Size])]
+    end.
+
+assert_property(Prop, NumTests) ->
+    Result = proper:quickcheck(Prop, [{numtests, NumTests}, {to_file, user}]),
+    case Result of
+        true -> ok;
+        false ->
+            CEx = proper:counterexample(),
+            ?assertEqual({property_passed, no_counterexample},
+                         {property_failed, CEx})
     end.

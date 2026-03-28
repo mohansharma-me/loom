@@ -13,7 +13,8 @@
     write_temp_config/1,
     flush_mailbox/0,
     with_config/2,
-    capture_log/1
+    capture_log/1,
+    cleanup_ets/0
 ]).
 
 %% Logger handler callback (for capture_log)
@@ -22,8 +23,9 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% @doc Start the loom application with a minimal test config pre-loaded.
-%% Loads the given config file (or default minimal fixture) into ETS
-%% before starting loom, so loom_app:start/2 skips file-based loading.
+%% ASSUMPTION: loom_app:start/2 detects pre-loaded config via ETS table
+%% existence and skips file-based loading. If loom_app changes its config
+%% detection mechanism, this function must be updated.
 -spec start_app() -> ok.
 start_app() ->
     start_app(fixture_path("minimal.json")).
@@ -37,8 +39,8 @@ start_app(ConfigPath) ->
 %% @doc Stop the loom application and clean up ETS tables.
 -spec stop_app() -> ok.
 stop_app() ->
-    _ = application:stop(loom),
-    _ = application:stop(cowboy),
+    stop_or_ignore(loom),
+    stop_or_ignore(cowboy),
     cleanup_ets(),
     ok.
 
@@ -96,7 +98,8 @@ with_config(ConfigMap, Fun) ->
     end.
 
 %% @doc Capture log events emitted during Fun execution.
-%% Returns {Result, [LogEvent]} where LogEvent is the logger event map.
+%% Returns {Result, [LogEvent]} where LogEvent is a logger event map
+%% containing a msg field. Events without msg are silently dropped.
 -spec capture_log(fun(() -> term())) -> {term(), [map()]}.
 capture_log(Fun) ->
     Self = self(),
@@ -119,10 +122,22 @@ capture_log(Fun) ->
 log(#{msg := _} = Event, #{config := #{pid := Pid}}) ->
     Pid ! {captured_log, Event},
     ok;
+%% OTP logger framework requires handlers to never crash; this catch-all
+%% handles events without msg or misconfigured handler config.
 log(_Event, _Config) ->
     ok.
 
 %%% Internal
+
+-spec stop_or_ignore(atom()) -> ok.
+stop_or_ignore(App) ->
+    case application:stop(App) of
+        ok -> ok;
+        {error, {not_started, App}} -> ok;
+        {error, Reason} ->
+            io:format(user, "WARNING: application:stop(~p) failed: ~p~n",
+                      [App, Reason])
+    end.
 
 -spec cleanup_ets() -> ok.
 cleanup_ets() ->
