@@ -283,7 +283,8 @@ rapid_crash_intensity_test(Config) ->
 
     %% Kill coordinator 3 times to exceed max_restarts=2.
     %% The supervisor allows 2 restarts, so the 3rd kill causes shutdown.
-    kill_coordinator_n_times(SupPid, EngineId, 3, undefined),
+    %% Collect OS PIDs of adapter processes for orphan verification.
+    CollectedOsPids = kill_coordinator_n_times(SupPid, EngineId, 3, undefined),
 
     %% Wait for supervisor to terminate
     receive
@@ -295,6 +296,13 @@ rapid_crash_intensity_test(Config) ->
 
     %% Verify supervisor terminated
     ?assertNot(is_process_alive(SupPid)),
+
+    %% Verify no orphaned OS processes after supervisor termination
+    timer:sleep(500),
+    lists:foreach(fun(OsPid) ->
+        ?assertNot(is_os_pid_alive(OsPid))
+    end, CollectedOsPids),
+    ct:pal("Verified ~B adapter OS processes cleaned up", [length(CollectedOsPids)]),
 
     %% Verify loom_sup (parent) is still alive — fault isolation works
     ?assert(is_process_alive(whereis(loom_sup))),
@@ -481,16 +489,30 @@ wait_port_pid_changed(_CoordPid, _EngineId, _OldPortPid, _Timeout) ->
     ct:fail("port pid never changed").
 
 %% @doc Kill the coordinator N times, waiting for each restart.
+%% Returns a list of OS PIDs of adapter processes that were running
+%% under each coordinator at the time of the kill (for orphan verification).
 %% Similar to loom_engine_sup_SUITE:kill_coordinator_n_times/3.
-kill_coordinator_n_times(_SupPid, _EngineId, 0, _LastPid) -> ok;
+kill_coordinator_n_times(_SupPid, _EngineId, 0, _LastPid) -> [];
 kill_coordinator_n_times(SupPid, EngineId, N, LastPid) ->
     case is_process_alive(SupPid) of
-        false -> ok;
+        false -> [];
         true ->
             CoordPid = wait_coordinator_changed(SupPid, LastPid, 10000),
-            ct:pal("Killing coordinator ~p (remaining: ~B)", [CoordPid, N]),
+            %% Collect the adapter OS PID before killing the coordinator.
+            %% Use catch for safety — the port may not be available yet
+            %% if the coordinator just restarted and hasn't spawned one.
+            OsPids = case catch find_port_pid(CoordPid, EngineId) of
+                PortPid when is_pid(PortPid) ->
+                    case catch loom_port:get_os_pid(PortPid) of
+                        OsPid when is_integer(OsPid) -> [OsPid];
+                        _ -> []
+                    end;
+                _ -> []
+            end,
+            ct:pal("Killing coordinator ~p (remaining: ~B, tracked OS PIDs: ~p)",
+                   [CoordPid, N, OsPids]),
             exit(CoordPid, kill),
-            kill_coordinator_n_times(SupPid, EngineId, N - 1, CoordPid)
+            OsPids ++ kill_coordinator_n_times(SupPid, EngineId, N - 1, CoordPid)
     end.
 
 %% @doc Wait until the coordinator child has a different pid from OldPid.
