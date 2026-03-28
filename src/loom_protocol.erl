@@ -33,6 +33,8 @@
   | {memory}
   | {cancel, Id :: binary()}
   | {shutdown}
+  %% ASSUMPTION: {crash, _} is a test-only message type used by crash recovery
+  %% tests to trigger controlled adapter exits. Production code must never send it.
   | {crash, ExitCode :: non_neg_integer()}.
 
 -type inbound_msg() ::
@@ -72,7 +74,8 @@ encode({generate, Id, Prompt, Params}) ->
         prompt => Prompt,
         params => Params
     }));
-encode({crash, ExitCode}) ->
+%% ASSUMPTION: crash is test-only — triggers adapter exit for crash recovery testing.
+encode({crash, ExitCode}) when is_integer(ExitCode), ExitCode >= 0 ->
     terminate_line(loom_json:encode(#{type => crash, exit_code => ExitCode})).
 
 -spec decode(binary()) -> {ok, inbound_msg()} | {error, decode_error()}.

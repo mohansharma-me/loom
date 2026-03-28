@@ -102,7 +102,13 @@ def handle_shutdown(_msg):
 
 def handle_crash(msg):
     """Force-exit with a specific exit code (for crash recovery testing)."""
+    # ASSUMPTION: os._exit() is used (not sys.exit) to bypass Python cleanup and
+    # guarantee immediate termination even if daemon threads are blocked on I/O,
+    # same rationale as handle_shutdown.
     exit_code = msg.get("exit_code", 1)
+    if not isinstance(exit_code, int) or exit_code < 0 or exit_code > 255:
+        return [{"type": "error", "code": "invalid_exit_code",
+                 "message": f"exit_code must be 0-255, got: {exit_code}"}]
     print(f"[mock_adapter] crash requested, exit_code={exit_code}", file=sys.stderr)
     sys.stderr.flush()
     os._exit(exit_code)

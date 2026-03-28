@@ -10,9 +10,10 @@
 %%% precise connection lifecycle control.
 %%%
 %%% ASSUMPTION: python3 is on PATH in the test environment.
-%%% ASSUMPTION: The loom_config ETS table must be owned by a process that
-%%% survives across CT callbacks (init_per_suite and test cases run in
-%%% different processes). We use a keeper process for this.
+%%% ASSUMPTION: If this suite's init_per_suite creates the loom_config ETS
+%%% table, it must transfer ownership to a long-lived keeper process. CT runs
+%%% init_per_suite in a temporary process that dies before test cases run.
+%%% If the table already exists (from another suite), no transfer is needed.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(loom_http_disconnect_SUITE).
@@ -83,7 +84,7 @@ init_per_suite(Config) ->
     HttpPort = ranch:get_port(loom_http_listener),
 
     [{engine_id, FirstEngine}, {sup_pid, SupPid},
-     {http_port, HttpPort} | Config].
+     {http_port, HttpPort}, {keeper_pid, KeeperPid} | Config].
 
 end_per_suite(Config) ->
     %% Stop our engine supervisor. Don't stop the app — other suites share the node.
@@ -91,10 +92,19 @@ end_per_suite(Config) ->
         Pid when is_pid(Pid) ->
             case is_process_alive(Pid) of
                 true ->
+                    MonRef = erlang:monitor(process, Pid),
                     exit(Pid, kill),
-                    timer:sleep(100);
+                    receive
+                        {'DOWN', MonRef, process, Pid, _Reason} -> ok
+                    after 5000 -> ok
+                    end;
                 false -> ok
             end;
+        _ -> ok
+    end,
+    %% Clean up the ETS keeper process
+    case ?config(keeper_pid, Config) of
+        KPid when is_pid(KPid) -> KPid ! stop;
         _ -> ok
     end,
     ok.
@@ -220,8 +230,12 @@ wait_status(EngineId, Status, Timeout) when Timeout > 0 ->
             timer:sleep(50),
             wait_status(EngineId, Status, Timeout - 50)
     end;
-wait_status(_EngineId, Status, _Timeout) ->
-    ct:fail(io_lib:format("wait_status: never reached ~p", [Status])).
+wait_status(EngineId, Status, _Timeout) ->
+    Actual = try loom_engine_coordinator:get_status(EngineId)
+             catch C:R -> {exception, C, R}
+             end,
+    ct:fail(io_lib:format("wait_status: never reached ~p for ~s (last: ~p)",
+                          [Status, EngineId, Actual])).
 
 wait_load_zero(EngineId, Timeout) when Timeout > 0 ->
     case catch loom_engine_coordinator:get_load(EngineId) of
@@ -230,8 +244,12 @@ wait_load_zero(EngineId, Timeout) when Timeout > 0 ->
             timer:sleep(50),
             wait_load_zero(EngineId, Timeout - 50)
     end;
-wait_load_zero(_EngineId, _Timeout) ->
-    ct:fail("wait_load_zero: load never reached 0").
+wait_load_zero(EngineId, _Timeout) ->
+    Actual = try loom_engine_coordinator:get_load(EngineId)
+             catch C:R -> {exception, C, R}
+             end,
+    ct:fail(io_lib:format("wait_load_zero: load never reached 0 for ~s (last: ~p)",
+                          [EngineId, Actual])).
 
 flush_mailbox() ->
     receive _ -> flush_mailbox()
@@ -271,24 +289,30 @@ read_full_response(Socket, Acc, Timeout) ->
             %% Server closed connection after sending response
             {ok, Acc};
         {error, timeout} ->
-            %% Return what we have
-            {ok, Acc};
+            case byte_size(Acc) of
+                0 ->
+                    ct:fail("read_full_response: timed out with no data received");
+                _ ->
+                    ct:pal("WARNING: read_full_response timed out with ~B bytes of partial data",
+                           [byte_size(Acc)]),
+                    {ok, Acc}
+            end;
         {error, Reason} ->
             ct:fail(io_lib:format("socket error: ~p", [Reason]))
     end.
 
 %% @doc Simple check if an HTTP response is complete.
-%% Looks for the end of a JSON body (closing brace after headers).
+%% ASSUMPTION: Non-streaming responses are single-line JSON objects from the
+%% mock adapter. This heuristic (last non-whitespace byte is '}') suffices
+%% for this test suite but is not reliable for chunked or multi-line JSON.
 is_response_complete(Data) ->
     case binary:match(Data, <<"\r\n\r\n">>) of
         nomatch -> false;
         {Pos, _Len} ->
-            %% We have headers. Check if body looks complete.
             Body = binary:part(Data, Pos + 4, byte_size(Data) - Pos - 4),
-            %% ASSUMPTION: Non-streaming responses are JSON objects.
-            %% Check for closing brace followed by potential whitespace.
-            byte_size(Body) > 0 andalso
-            binary:last(string:trim(Body, trailing)) =:= $}
+            Trimmed = string:trim(Body, trailing),
+            byte_size(Trimmed) > 0 andalso
+            binary:last(Trimmed) =:= $}
     end.
 
 %% @doc Truncate binary for logging.
