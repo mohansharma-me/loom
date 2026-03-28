@@ -232,8 +232,7 @@ validate_optional_fields(Config) ->
 build_coordinator_config(Config) ->
     EngineId = maps:get(engine_id, Config),
     ?LOG_INFO(#{msg => mapping_coordinator_config,
-               engine_id => EngineId,
-               mapping => "adapter_cmd->command, adapter_args->args"}),
+               engine_id => EngineId}),
     Base = #{
         engine_id => EngineId,
         command => maps:get(adapter_cmd, Config),
@@ -265,6 +264,7 @@ monitor_child_spec(EngineId, GpuId, Config) ->
 build_monitor_opts(GpuId, Config) ->
     Base = #{
         gpu_id => GpuId,
+        engine_id => maps:get(engine_id, Config),
         poll_interval_ms => maps:get(gpu_poll_interval, Config, 5000),
         allow_mock_backend => maps:get(allow_mock_backend, Config, false)
     },

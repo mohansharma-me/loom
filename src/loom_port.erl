@@ -360,6 +360,9 @@ handle_line(RawLine, State, #data{line_buf = Buf} = Data) ->
 
 %% @doc Decode a complete line and dispatch based on current state and message type.
 -spec dispatch_line(binary(), atom(), #data{}) -> gen_statem:event_handler_result(atom()).
+%% ASSUMPTION: engine_id is expected in Opts, forwarded by
+%% loom_engine_coordinator:build_port_opts/1. Falls back to undefined
+%% if loom_port is used standalone (e.g., in tests).
 dispatch_line(Line, State, #data{ref = Ref, opts = Opts} = Data) ->
     telemetry:execute([loom, port, message_in],
         #{byte_size => byte_size(Line)},

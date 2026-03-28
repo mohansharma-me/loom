@@ -9,7 +9,7 @@
     {ok, cowboy_req:req(), cowboy_middleware:env()} | {stop, cowboy_req:req()}.
 execute(Req0, Env) ->
     RequestId = loom_http_util:generate_request_id(),
-    logger:set_process_metadata(#{request_id => RequestId}),
+    logger:update_process_metadata(#{request_id => RequestId}),
     Req1 = cowboy_req:set_resp_header(<<"x-request-id">>, RequestId, Req0),
     %% Store request ID in Req metadata for handler access
     Req2 = Req1#{request_id => RequestId},
@@ -34,6 +34,9 @@ emit_request_start(Method, Path, RequestId) ->
         #{system_time => erlang:system_time(millisecond)},
         #{method => Method, path => Path, request_id => RequestId}).
 
+%% NOTE: This helper is intended to be called from HTTP handlers at response
+%% completion. Integration with cowboy handler callbacks is pending — currently
+%% no production code calls this function.
 -spec emit_request_stop(non_neg_integer(), binary(), binary(), binary(), integer()) -> ok.
 emit_request_stop(Duration, Method, Path, RequestId, Status) ->
     telemetry:execute([loom, http, request_stop],

@@ -43,6 +43,12 @@
     merge_config/1
 ]).
 
+%% Telemetry helpers (exported for testing)
+-export([
+    emit_state_change/3,
+    emit_token/2
+]).
+
 %% Request ID generation (exported for testing)
 -export([generate_request_id/0]).
 
@@ -250,7 +256,7 @@ init(Config) ->
     %% we need to survive port crashes for self-heal.
     process_flag(trap_exit, true),
     EngineId = maps:get(engine_id, Config),
-    logger:set_process_metadata(#{engine_id => EngineId}),
+    logger:update_process_metadata(#{engine_id => EngineId}),
     MaxConcurrent = maps:get(max_concurrent, Config),
     %% Create named ETS tables for lock-free reads by router/metrics.
     %% ASSUMPTION: Table names are unique per EngineId; if a coordinator
@@ -315,9 +321,7 @@ starting(info, {loom_port_ready, PortRef, Model, Backend}, Data) ->
     ets:update_element(Data#data.meta_table, meta, [
         {4, Model}, {5, Backend}, {6, Data#data.port_pid}
     ]),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => starting, new_state => ready}),
+    emit_state_change(Data#data.engine_id, starting, ready),
     {next_state, ready, Data#data{port_ref = PortRef}};
 starting(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
     %% Port died before reaching ready → go to stopped
@@ -325,27 +329,21 @@ starting(info, {loom_port_exit, _Ref, ExitCode}, Data) ->
     ?LOG_WARNING(#{msg => port_exited_during_startup,
                    engine_id => Data#data.engine_id,
                    exit_code => NormalizedCode}),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => starting, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(info, {loom_port_timeout, _Ref}, Data) ->
     %% Heartbeat timeout from loom_port → shutdown port, go to stopped
     ?LOG_WARNING(#{msg => port_heartbeat_timeout_during_startup,
                    engine_id => Data#data.engine_id}),
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => starting, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(state_timeout, startup_timeout, Data) ->
     %% Startup timeout → shutdown port, go to stopped
     ?LOG_WARNING(#{msg => startup_timeout_expired,
                    engine_id => Data#data.engine_id}),
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => starting, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting({call, From}, {generate, _Prompt, _Params}, _Data) ->
     %% Not ready yet — reply with error
@@ -355,24 +353,18 @@ starting(info, {'EXIT', PortPid, _Reason}, #data{port_pid = PortPid} = Data) ->
     %% (e.g., if killed with exit(kill)). Transition to stopped.
     ?LOG_WARNING(#{msg => port_process_exited_during_startup,
                    engine_id => Data#data.engine_id}),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => starting, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(info, {'EXIT', _Pid, _Reason}, _Data) ->
     %% EXIT from other linked processes — ignore.
     keep_state_and_data;
 starting(cast, do_shutdown, Data) ->
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => starting, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(cast, do_stop, Data) ->
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => starting, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, starting, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 starting(info, {loom_port_error, _Ref, Error}, #data{engine_id = EngineId}) ->
     ?LOG_WARNING(#{msg => port_error_during_startup,
@@ -428,9 +420,7 @@ ready(info, {loom_port_msg, PortRef, {token, Id, _TokenId, Text, Finished}},
       #data{port_ref = PortRef, reqs_table = ReqsTable, engine_id = EngineId} = _Data) ->
     case ets:lookup(ReqsTable, Id) of
         [{Id, CallerPid, _MonRef, _}] ->
-            telemetry:execute([loom, engine, token],
-                #{count => 1},
-                #{engine_id => EngineId, request_id => Id}),
+            emit_token(EngineId, Id),
             CallerPid ! {loom_token, Id, Text, Finished},
             keep_state_and_data;
         [] ->
@@ -511,18 +501,14 @@ ready(info, {loom_port_exit, _Ref, ExitCode},
     case loom_port:start_link(PortOpts) of
         {ok, NewPortPid} ->
             update_meta_status(starting, Data),
-            telemetry:execute([loom, engine, state_change],
-                #{system_time => erlang:system_time(millisecond)},
-                #{engine_id => EngineId, old_state => ready, new_state => starting}),
+            emit_state_change(EngineId, ready, starting),
             {next_state, starting,
              Data#data{port_pid = NewPortPid, port_ref = undefined}};
         {error, Reason} ->
             ?LOG_ERROR(#{msg => self_heal_port_start_failed,
                        engine_id => EngineId,
                        reason => Reason}),
-            telemetry:execute([loom, engine, state_change],
-                #{system_time => erlang:system_time(millisecond)},
-                #{engine_id => EngineId, old_state => ready, new_state => stopped}),
+            emit_state_change(EngineId, ready, stopped),
             {next_state, stopped, Data#data{port_pid = undefined, port_ref = undefined}}
     end;
 
@@ -534,9 +520,7 @@ ready(info, {loom_port_timeout, _Ref}, #data{reqs_table = ReqsTable} = Data) ->
     notify_all_callers_error(ReqsTable, <<"engine_timeout">>, <<"heartbeat_timeout">>),
     ets:delete_all_objects(ReqsTable),
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => ready, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, ready, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
 %% --- Caller death (DOWN monitor) ---
@@ -592,18 +576,14 @@ ready(info, {'EXIT', PortPid, Reason},
     case loom_port:start_link(PortOpts) of
         {ok, NewPortPid} ->
             update_meta_status(starting, Data),
-            telemetry:execute([loom, engine, state_change],
-                #{system_time => erlang:system_time(millisecond)},
-                #{engine_id => EngineId, old_state => ready, new_state => starting}),
+            emit_state_change(EngineId, ready, starting),
             {next_state, starting,
              Data#data{port_pid = NewPortPid, port_ref = undefined}};
         {error, StartReason} ->
             ?LOG_ERROR(#{msg => self_heal_port_start_failed,
                        engine_id => EngineId,
                        reason => StartReason}),
-            telemetry:execute([loom, engine, state_change],
-                #{system_time => erlang:system_time(millisecond)},
-                #{engine_id => EngineId, old_state => ready, new_state => stopped}),
+            emit_state_change(EngineId, ready, stopped),
             {next_state, stopped, Data#data{port_pid = undefined, port_ref = undefined}}
     end;
 
@@ -616,14 +596,10 @@ ready(cast, do_shutdown, #data{reqs_table = ReqsTable, engine_id = EngineId} = D
     case ets:info(ReqsTable, size) of
         0 ->
             stop_port(Data),
-            telemetry:execute([loom, engine, state_change],
-                #{system_time => erlang:system_time(millisecond)},
-                #{engine_id => EngineId, old_state => ready, new_state => stopped}),
+            emit_state_change(EngineId, ready, stopped),
             {next_state, stopped, Data#data{port_pid = undefined}};
         _N ->
-            telemetry:execute([loom, engine, state_change],
-                #{system_time => erlang:system_time(millisecond)},
-                #{engine_id => EngineId, old_state => ready, new_state => draining}),
+            emit_state_change(EngineId, ready, draining),
             {next_state, draining, Data}
     end;
 
@@ -633,9 +609,7 @@ ready(cast, do_stop, #data{reqs_table = ReqsTable, engine_id = EngineId} = Data)
     notify_all_callers_error(ReqsTable, <<"engine_stopped">>, <<"stopped">>),
     ets:delete_all_objects(ReqsTable),
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => EngineId, old_state => ready, new_state => stopped}),
+    emit_state_change(EngineId, ready, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
 %% --- Catch-all: reply to unrecognized calls, log unexpected events ---
@@ -668,9 +642,7 @@ draining(state_timeout, drain_timeout, #data{reqs_table = ReqsTable} = Data) ->
     notify_all_callers_error(ReqsTable, <<"drain_timeout">>, <<"drain_timeout">>),
     ets:delete_all_objects(ReqsTable),
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => draining, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, draining, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
 %% --- generate call: reject with {error, draining} ---
@@ -682,9 +654,7 @@ draining(info, {loom_port_msg, PortRef, {token, Id, _TokenId, Text, Finished}},
          #data{port_ref = PortRef, reqs_table = ReqsTable, engine_id = EngineId} = _Data) ->
     case ets:lookup(ReqsTable, Id) of
         [{Id, CallerPid, _MonRef, _}] ->
-            telemetry:execute([loom, engine, token],
-                #{count => 1},
-                #{engine_id => EngineId, request_id => Id}),
+            emit_token(EngineId, Id),
             CallerPid ! {loom_token, Id, Text, Finished},
             keep_state_and_data;
         [] ->
@@ -727,9 +697,7 @@ draining(info, {loom_port_exit, _Ref, ExitCode},
                    exit_code => NormalizedCode}),
     notify_all_callers_error(ReqsTable, <<"engine_crashed">>, NormalizedBin),
     ets:delete_all_objects(ReqsTable),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => EngineId, old_state => draining, new_state => stopped}),
+    emit_state_change(EngineId, draining, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
 %% --- Port heartbeat timeout during drain ---
@@ -739,9 +707,7 @@ draining(info, {loom_port_timeout, _Ref}, #data{reqs_table = ReqsTable} = Data) 
     notify_all_callers_error(ReqsTable, <<"engine_timeout">>, <<"heartbeat_timeout">>),
     ets:delete_all_objects(ReqsTable),
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => Data#data.engine_id, old_state => draining, new_state => stopped}),
+    emit_state_change(Data#data.engine_id, draining, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
 %% --- Caller death (DOWN): cancel request, cleanup, check if drain complete ---
@@ -778,9 +744,7 @@ draining(cast, do_stop, #data{reqs_table = ReqsTable, engine_id = EngineId} = Da
     notify_all_callers_error(ReqsTable, <<"engine_stopped">>, <<"stopped">>),
     ets:delete_all_objects(ReqsTable),
     stop_port(Data),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => EngineId, old_state => draining, new_state => stopped}),
+    emit_state_change(EngineId, draining, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
 %% --- EXIT from port process ---
@@ -796,9 +760,7 @@ draining(info, {'EXIT', PortPid, Reason},
                    reason => Reason}),
     notify_all_callers_error(ReqsTable, <<"engine_crashed">>, NormalizedBin),
     ets:delete_all_objects(ReqsTable),
-    telemetry:execute([loom, engine, state_change],
-        #{system_time => erlang:system_time(millisecond)},
-        #{engine_id => EngineId, old_state => draining, new_state => stopped}),
+    emit_state_change(EngineId, draining, stopped),
     {next_state, stopped, Data#data{port_pid = undefined}};
 
 %% --- EXIT from other linked processes, loom_port_error, gpu_alert: keep state ---
@@ -873,9 +835,10 @@ generate_request_id() ->
 -spec build_port_opts(map()) -> map().
 build_port_opts(Config) ->
     BaseOpts = #{
-        command => maps:get(command, Config),
-        args    => maps:get(args, Config, []),
-        owner   => self()
+        command   => maps:get(command, Config),
+        args      => maps:get(args, Config, []),
+        owner     => self(),
+        engine_id => maps:get(engine_id, Config)
     },
     %% Merge any extra port_opts from the config (e.g., timeouts)
     PortOpts = maps:get(port_opts, Config, #{}),
@@ -920,14 +883,29 @@ normalize_exit_code_binary(Code) when is_integer(Code) ->
 %% If the requests table is empty, stop the port and transition to stopped.
 -spec maybe_drain_complete(#data{}) ->
     gen_statem:event_handler_result(atom()).
-maybe_drain_complete(#data{reqs_table = ReqsTable} = Data) ->
+maybe_drain_complete(#data{reqs_table = ReqsTable, engine_id = EngineId} = Data) ->
     case ets:info(ReqsTable, size) of
         0 ->
             stop_port(Data),
+            emit_state_change(EngineId, draining, stopped),
             {next_state, stopped, Data#data{port_pid = undefined}};
         _N ->
             keep_state_and_data
     end.
+
+%% @doc Emit a telemetry event for engine state transitions.
+-spec emit_state_change(binary(), atom(), atom()) -> ok.
+emit_state_change(EngineId, OldState, NewState) ->
+    telemetry:execute([loom, engine, state_change],
+        #{system_time => erlang:system_time(millisecond)},
+        #{engine_id => EngineId, old_state => OldState, new_state => NewState}).
+
+%% @doc Emit a telemetry event for a forwarded token.
+-spec emit_token(binary(), binary()) -> ok.
+emit_token(EngineId, RequestId) ->
+    telemetry:execute([loom, engine, token],
+        #{count => 1},
+        #{engine_id => EngineId, request_id => RequestId}).
 
 %% @doc Notify all in-flight callers with an error message and demonitor them.
 %% Iterates the requests ETS table and sends {loom_error, RequestId, Code, Detail}
