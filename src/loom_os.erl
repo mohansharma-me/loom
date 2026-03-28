@@ -26,10 +26,10 @@
 %% Accepts `undefined` as a no-op (the OS PID was never captured).
 -spec force_kill(pos_integer() | undefined) -> ok.
 force_kill(undefined) ->
-    ?LOG_DEBUG("loom_os: force_kill called with undefined pid, skipping"),
+    ?LOG_DEBUG(#{msg => force_kill_skipped, reason => undefined_pid}),
     ok;
 force_kill(OsPid) when is_integer(OsPid), OsPid > 0 ->
-    ?LOG_WARNING("loom_os: force-killing OS process ~b", [OsPid]),
+    ?LOG_WARNING(#{msg => force_killing, os_pid => OsPid}),
     Cmd = case os:type() of
         {unix, _} ->
             "kill -9 " ++ integer_to_list(OsPid) ++ " 2>&1";
@@ -43,10 +43,9 @@ force_kill(OsPid) when is_integer(OsPid), OsPid > 0 ->
     case string:trim(os:cmd(Cmd)) of
         "" -> ok;
         Output ->
-            ?LOG_DEBUG("loom_os: force_kill output for OS pid ~b: ~s",
-                       [OsPid, Output]),
+            ?LOG_DEBUG(#{msg => force_kill_output, os_pid => OsPid, output => Output}),
             ok
     end;
 force_kill(BadPid) ->
-    ?LOG_ERROR("loom_os: force_kill called with invalid pid: ~p", [BadPid]),
+    ?LOG_ERROR(#{msg => force_kill_invalid_pid, pid => BadPid}),
     ok.

@@ -37,6 +37,8 @@
     terminate/3
 ]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -record(data, {
     port        :: port() | undefined,
     closed_port :: port() | undefined,  %% preserved after port_close for matching late exit_status
@@ -205,20 +207,22 @@ ready({call, From}, get_state, _Data) ->
     {keep_state_and_data, [{reply, From, ready}]};
 ready({call, From}, get_os_pid, #data{os_pid = OsPid}) ->
     {keep_state_and_data, [{reply, From, OsPid}]};
-ready({call, From}, {send, Msg}, #data{port = Port} = Data) ->
+ready({call, From}, {send, Msg}, #data{port = Port, opts = Opts} = Data) ->
     case Port of
         undefined ->
             {keep_state_and_data, [{reply, From, {error, not_ready}}]};
         _ ->
             try loom_protocol:encode(Msg) of
                 Encoded ->
+                    telemetry:execute([loom, port, message_out],
+                        #{byte_size => byte_size(Encoded)},
+                        #{engine_id => maps:get(engine_id, Opts, undefined)}),
                     try port_command(Port, Encoded) of
                         true -> {keep_state, Data, [{reply, From, ok}]}
                     catch
                         error:badarg ->
                             %% Port died — transition to shutting_down
-                            logger:warning("loom_port: port_command failed in ready state, "
-                                           "port likely closed"),
+                            ?LOG_WARNING(#{msg => port_command_failed_in_ready}),
                             {next_state, shutting_down, Data,
                              [{reply, From, {error, port_closed}}]}
                     end
@@ -243,8 +247,7 @@ shutting_down(enter, _OldState, #data{port = Port, opts = Opts} = Data) ->
             ShutdownCmd = loom_protocol:encode({shutdown}),
             try port_command(Port, ShutdownCmd)
             catch error:badarg ->
-                logger:info("loom_port: shutdown command failed (port already closed), "
-                            "will escalate after timeout")
+                ?LOG_INFO(#{msg => shutdown_command_failed_port_closed})
             end;
         false ->
             ok
@@ -256,7 +259,7 @@ shutting_down(state_timeout, shutdown_timeout, #data{port = Port} = Data) ->
         true ->
             try port_close(Port)
             catch error:badarg ->
-                logger:debug("loom_port: port_close failed (port already closed)")
+                ?LOG_DEBUG(#{msg => port_close_failed_already_closed})
             end,
             PostCloseTimeout = maps:get(post_close_timeout_ms, Data#data.opts, 5000),
             {keep_state, Data#data{port = undefined, closed_port = Port},
@@ -268,9 +271,7 @@ shutting_down(state_timeout, shutdown_timeout, #data{port = Port} = Data) ->
     end;
 shutting_down(state_timeout, post_close_timeout, Data) ->
     %% Level 3: force-kill the OS process
-    logger:warning("loom_port: OS process ~p did not exit after post_close_timeout, "
-                   "escalating to force-kill",
-                   [Data#data.os_pid]),
+    ?LOG_WARNING(#{msg => escalating_to_force_kill, os_pid => Data#data.os_pid}),
     loom_os:force_kill(Data#data.os_pid),
     notify_owner({loom_port_exit, Data#data.ref, killed}, Data),
     %% Clear os_pid so terminate/3 does not redundantly force-kill again.
@@ -311,7 +312,7 @@ terminate(_Reason, _State, #data{port = Port, os_pid = OsPid, owner_mon = OwnerM
         true ->
             try port_close(Port)
             catch error:badarg ->
-                logger:debug("loom_port: port_close failed in terminate (port already closed)")
+                ?LOG_DEBUG(#{msg => port_close_failed_in_terminate})
             end;
         false ->
             ok
@@ -359,7 +360,13 @@ handle_line(RawLine, State, #data{line_buf = Buf} = Data) ->
 
 %% @doc Decode a complete line and dispatch based on current state and message type.
 -spec dispatch_line(binary(), atom(), #data{}) -> gen_statem:event_handler_result(atom()).
-dispatch_line(Line, State, #data{ref = Ref} = Data) ->
+%% ASSUMPTION: engine_id is expected in Opts, forwarded by
+%% loom_engine_coordinator:build_port_opts/1. Falls back to undefined
+%% if loom_port is used standalone (e.g., in tests).
+dispatch_line(Line, State, #data{ref = Ref, opts = Opts} = Data) ->
+    telemetry:execute([loom, port, message_in],
+        #{byte_size => byte_size(Line)},
+        #{engine_id => maps:get(engine_id, Opts, undefined)}),
     case loom_protocol:decode(Line) of
         {ok, {heartbeat, _Status, _Detail}} when State =:= spawning ->
             {next_state, loading, Data};
@@ -375,8 +382,9 @@ dispatch_line(Line, State, #data{ref = Ref} = Data) ->
             {keep_state, Data};
         {ok, Msg} ->
             %% Message in unexpected state — log and drop
-            logger:debug("loom_port: dropping ~p message in ~p state",
-                         [element(1, Msg), State]),
+            ?LOG_DEBUG(#{msg => dropping_message_in_unexpected_state,
+                       message_type => element(1, Msg),
+                       state => State}),
             {keep_state, Data};
         {error, Reason} ->
             notify_owner({loom_port_error, Ref, {decode_error, Reason}}, Data),
@@ -402,7 +410,8 @@ notify_owner(Msg, #data{owner = Owner}) ->
             Owner ! Msg,
             ok;
         false ->
-            logger:warning("loom_port: cannot notify dead owner ~p with ~p",
-                           [Owner, Msg]),
+            ?LOG_WARNING(#{msg => cannot_notify_dead_owner,
+                         owner => Owner,
+                         notification => Msg}),
             ok
     end.

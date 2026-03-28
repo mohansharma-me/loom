@@ -1,7 +1,15 @@
 [
     {loom, []},
+    {kernel, [
+        {logger_level, info},
+        {logger, [
+            {handler, default, logger_std_h, #{
+                config => #{type => standard_io},
+                formatter => {loom_log_formatter, #{}}
+            }}
+        ]}
+    ]},
     {sasl, [
-        {sasl_error_logger, tty},
-        {errlog_type, error}
+        {sasl_error_logger, false}
     ]}
 ].

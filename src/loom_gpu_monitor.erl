@@ -70,6 +70,8 @@ stop(Pid) ->
 -spec init(map()) -> {ok, #data{}} | {stop, term()}.
 init(Opts) ->
     GpuId = maps:get(gpu_id, Opts),
+    EngineId = maps:get(engine_id, Opts, undefined),
+    logger:update_process_metadata(#{engine_id => EngineId, gpu_id => GpuId}),
     PollInterval = maps:get(poll_interval_ms, Opts, 5000),
     PollTimeout = maps:get(poll_timeout_ms, Opts, 3000),
     Coordinator = maps:get(coordinator, Opts, undefined),
@@ -80,9 +82,9 @@ init(Opts) ->
     %% Validate poll_timeout < poll_interval
     case PollTimeout >= PollInterval of
         true ->
-            ?LOG_ERROR("loom_gpu_monitor: poll_timeout_ms (~b) must be less "
-                       "than poll_interval_ms (~b)",
-                       [PollTimeout, PollInterval]),
+            ?LOG_ERROR(#{msg => invalid_config_poll_timeout_gte_interval,
+                       poll_timeout_ms => PollTimeout,
+                       poll_interval_ms => PollInterval}),
             {stop, {invalid_config, poll_timeout_gte_interval}};
         false ->
             init_with_backend(BackendAtom, AllowMock, Opts#{
@@ -122,9 +124,10 @@ handle_info(poll, Data) ->
 handle_info({'DOWN', MonRef, process, Pid, Reason},
             #data{coordinator_mon = MonRef, coordinator_pid = Pid,
                   gpu_id = GpuId} = Data) ->
-    ?LOG_WARNING("loom_gpu_monitor: gpu_id=~p coordinator ~p died "
-                 "(reason=~p), clearing coordinator reference",
-                 [GpuId, Pid, Reason]),
+    ?LOG_WARNING(#{msg => coordinator_died,
+                   gpu_id => GpuId,
+                   coordinator => Pid,
+                   reason => Reason}),
     {noreply, Data#data{coordinator_pid = undefined,
                         coordinator_mon = undefined}};
 handle_info(_Info, Data) ->
@@ -133,15 +136,16 @@ handle_info(_Info, Data) ->
 -spec terminate(term(), #data{}) -> ok.
 terminate(Reason, #data{gpu_id = GpuId, backend_mod = Mod,
                          backend_state = BState, timer_ref = TRef}) ->
-    ?LOG_INFO("loom_gpu_monitor: gpu_id=~p stopping, reason=~p",
-              [GpuId, Reason]),
+    ?LOG_INFO(#{msg => stopping, gpu_id => GpuId, reason => Reason}),
     cancel_timer(TRef),
     try Mod:terminate(BState)
     catch
         Class:Error:Stacktrace ->
-            ?LOG_ERROR("loom_gpu_monitor: gpu_id=~p backend terminate crashed — "
-                       "class=~p error=~p stacktrace=~p",
-                       [GpuId, Class, Error, Stacktrace])
+            ?LOG_ERROR(#{msg => backend_terminate_crashed,
+                       gpu_id => GpuId,
+                       class => Class,
+                       error => Error,
+                       stacktrace => Stacktrace})
     end,
     ok.
 
@@ -152,27 +156,25 @@ terminate(Reason, #data{gpu_id = GpuId, backend_mod = Mod,
 -spec init_with_backend(atom(), boolean(), map()) -> {ok, #data{}} | {stop, term()}.
 init_with_backend(auto, AllowMock, Opts) ->
     GpuId = maps:get(gpu_id, Opts),
-    ?LOG_INFO("loom_gpu_monitor: auto-detecting backend for gpu_id=~p", [GpuId]),
+    ?LOG_INFO(#{msg => auto_detecting_backend, gpu_id => GpuId}),
     case resolve_backend(AllowMock) of
         {ok, Mod} ->
-            ?LOG_INFO("loom_gpu_monitor: selected backend=~p for gpu_id=~p",
-                      [Mod, GpuId]),
+            ?LOG_INFO(#{msg => backend_selected, backend => Mod, gpu_id => GpuId}),
             init_backend(Mod, Opts);
         {error, Reason} ->
-            ?LOG_ERROR("loom_gpu_monitor: no backend detected for gpu_id=~p",
-                       [GpuId]),
+            ?LOG_ERROR(#{msg => no_backend_detected, gpu_id => GpuId}),
             {stop, Reason}
     end;
 init_with_backend(BackendAtom, _AllowMock, Opts) ->
     case backend_module(BackendAtom) of
         {ok, Mod} ->
             GpuId = maps:get(gpu_id, Opts),
-            ?LOG_INFO("loom_gpu_monitor: using explicitly configured backend=~p "
-                      "for gpu_id=~p", [Mod, GpuId]),
+            ?LOG_INFO(#{msg => using_explicit_backend, backend => Mod, gpu_id => GpuId}),
             init_backend(Mod, Opts);
         {error, _} = Err ->
-            ?LOG_ERROR("loom_gpu_monitor: unknown backend ~p, "
-                       "valid backends: nvidia, apple, mock", [BackendAtom]),
+            ?LOG_ERROR(#{msg => unknown_backend,
+                       backend => BackendAtom,
+                       valid_backends => [nvidia, apple, mock]}),
             {stop, Err}
     end.
 
@@ -189,12 +191,14 @@ init_backend(Mod, Opts) ->
 
     case Mod:init(Opts) of
         {ok, BState} ->
-            ?LOG_INFO("loom_gpu_monitor: backend init succeeded for gpu_id=~p, "
-                      "scheduling first poll", [GpuId]),
+            ?LOG_INFO(#{msg => backend_init_succeeded, gpu_id => GpuId}),
             Thresholds = maps:merge(Mod:default_thresholds(), UserThresholds),
-            ?LOG_INFO("loom_gpu_monitor: starting gpu_id=~p backend=~p "
-                      "poll_interval=~bms poll_timeout=~bms thresholds=~p",
-                      [GpuId, Mod, PollInterval, PollTimeout, Thresholds]),
+            ?LOG_INFO(#{msg => starting_monitor,
+                       gpu_id => GpuId,
+                       backend => Mod,
+                       poll_interval_ms => PollInterval,
+                       poll_timeout_ms => PollTimeout,
+                       thresholds => Thresholds}),
             CoordMon = case Coordinator of
                 undefined -> undefined;
                 Pid -> erlang:monitor(process, Pid)
@@ -215,8 +219,10 @@ init_backend(Mod, Opts) ->
             },
             {ok, schedule_poll(Data)};
         {error, Reason} ->
-            ?LOG_ERROR("loom_gpu_monitor: backend init failed for gpu_id=~p "
-                       "backend=~p reason=~p", [GpuId, Mod, Reason]),
+            ?LOG_ERROR(#{msg => backend_init_failed,
+                       gpu_id => GpuId,
+                       backend => Mod,
+                       reason => Reason}),
             {stop, {backend_init_failed, Reason}}
     end.
 
@@ -230,6 +236,14 @@ do_poll(#data{gpu_id = GpuId, backend_mod = Mod,
     case Mod:poll(BState) of
         {ok, Metrics, NewBState} ->
             log_metrics(GpuId, Metrics),
+            %% ASSUMPTION: engine_id is available in process metadata set during init/1.
+            %% We use the gpu_id from the record which is always available.
+            telemetry:execute([loom, gpu, poll],
+                #{gpu_util => maps:get(gpu_util, Metrics),
+                  mem_used_gb => maps:get(mem_used_gb, Metrics),
+                  mem_total_gb => maps:get(mem_total_gb, Metrics),
+                  temperature_c => maps:get(temperature_c, Metrics)},
+                #{engine_id => get_engine_id_from_metadata(), gpu_id => GpuId}),
             Data1 = Data#data{
                 backend_state      = NewBState,
                 latest_metrics     = Metrics,
@@ -240,9 +254,10 @@ do_poll(#data{gpu_id = GpuId, backend_mod = Mod,
             {{ok, Metrics}, Data3};
         {error, Reason} ->
             Errors = Data#data.consecutive_errors + 1,
-            ?LOG_WARNING("loom_gpu_monitor: gpu_id=~p poll failed — "
-                         "reason=~p, consecutive_errors=~b, serving stale metrics",
-                         [GpuId, Reason, Errors]),
+            ?LOG_WARNING(#{msg => poll_failed,
+                         gpu_id => GpuId,
+                         reason => Reason,
+                         consecutive_errors => Errors}),
             Data1 = Data#data{consecutive_errors = Errors},
             Data2 = maybe_alert_poll_failure(Data1),
             {{error, Reason}, Data2}
@@ -251,9 +266,9 @@ do_poll(#data{gpu_id = GpuId, backend_mod = Mod,
 -spec maybe_log_recovery(#data{}, #data{}) -> #data{}.
 maybe_log_recovery(#data{consecutive_errors = Old},
                    #data{gpu_id = GpuId} = New) when Old >= 3 ->
-    ?LOG_INFO("loom_gpu_monitor: gpu_id=~p poll recovered after ~b "
-              "consecutive failures, resetting error counter",
-              [GpuId, Old]),
+    ?LOG_INFO(#{msg => poll_recovered,
+               gpu_id => GpuId,
+               previous_consecutive_errors => Old}),
     New;
 maybe_log_recovery(_Old, New) ->
     New.
@@ -263,8 +278,9 @@ maybe_log_recovery(_Old, New) ->
 %% already knows. Recovery is logged separately in maybe_log_recovery/2.
 -spec maybe_alert_poll_failure(#data{}) -> #data{}.
 maybe_alert_poll_failure(#data{consecutive_errors = 3, gpu_id = GpuId} = Data) ->
-    ?LOG_ERROR("loom_gpu_monitor: gpu_id=~p poll failed 3 consecutive "
-               "times, alerting coordinator", [GpuId]),
+    ?LOG_ERROR(#{msg => poll_failed_consecutive,
+               gpu_id => GpuId,
+               consecutive_errors => 3}),
     send_alert(GpuId, poll_failure, 3, 3, Data),
     Data;
 maybe_alert_poll_failure(Data) ->
@@ -298,17 +314,21 @@ check_threshold(AlertType, Value, ThresholdKey,
             IsBreached = Value > Limit,
             case {WasBreached, IsBreached} of
                 {false, true} ->
-                    Unit = threshold_unit(ThresholdKey),
-                    ?LOG_INFO("loom_gpu_monitor: gpu_id=~p threshold BREACHED — "
-                              "~s=~.1f~s (threshold=~.1f~s), alerting coordinator",
-                              [GpuId, AlertType, Value, Unit, Limit, Unit]),
+                    ?LOG_INFO(#{msg => threshold_breached,
+                                gpu_id => GpuId,
+                                alert_type => AlertType,
+                                value => Value,
+                                threshold => Limit,
+                                threshold_key => ThresholdKey}),
                     send_alert(GpuId, AlertType, Value, Limit, Data),
                     Data#data{breached = maps:put(AlertType, true, Breached)};
                 {true, false} ->
-                    Unit = threshold_unit(ThresholdKey),
-                    ?LOG_INFO("loom_gpu_monitor: gpu_id=~p threshold CLEARED — "
-                              "~s=~.1f~s (threshold=~.1f~s)",
-                              [GpuId, AlertType, Value, Unit, Limit, Unit]),
+                    ?LOG_INFO(#{msg => threshold_cleared,
+                                gpu_id => GpuId,
+                                alert_type => AlertType,
+                                value => Value,
+                                threshold => Limit,
+                                threshold_key => ThresholdKey}),
                     Data#data{breached = maps:put(AlertType, false, Breached)};
                 _ ->
                     Data
@@ -317,19 +337,16 @@ check_threshold(AlertType, Value, ThresholdKey,
             Data
     end.
 
--spec threshold_unit(atom()) -> string().
-threshold_unit(temperature_c) -> "C";
-threshold_unit(mem_percent)   -> "%".
-
 -spec warn_unknown_threshold_keys(loom_gpu_backend:gpu_id(), map()) -> ok.
 warn_unknown_threshold_keys(GpuId, UserThresholds) ->
     Unknown = maps:keys(UserThresholds) -- ?KNOWN_THRESHOLD_KEYS,
     case Unknown of
         [] -> ok;
         Keys ->
-            ?LOG_WARNING("loom_gpu_monitor: gpu_id=~p unknown threshold keys ~p "
-                         "(known: ~p) — these will be ignored",
-                         [GpuId, Keys, ?KNOWN_THRESHOLD_KEYS]),
+            ?LOG_WARNING(#{msg => unknown_threshold_keys,
+                         gpu_id => GpuId,
+                         unknown_keys => Keys,
+                         known_keys => ?KNOWN_THRESHOLD_KEYS}),
             ok
     end.
 
@@ -340,9 +357,9 @@ warn_unknown_threshold_keys(GpuId, UserThresholds) ->
 -spec send_alert(term(), atom(), number(), number(), #data{}) -> ok.
 send_alert(GpuId, AlertType, _Value, _Threshold,
            #data{coordinator_pid = undefined}) ->
-    ?LOG_WARNING("loom_gpu_monitor: gpu_id=~p ~p breached but no "
-                 "coordinator configured, alert not sent",
-                 [GpuId, AlertType]),
+    ?LOG_WARNING(#{msg => alert_no_coordinator,
+                   gpu_id => GpuId,
+                   alert_type => AlertType}),
     ok;
 send_alert(GpuId, AlertType, Value, Threshold,
            #data{coordinator_pid = Pid}) ->
@@ -351,8 +368,9 @@ send_alert(GpuId, AlertType, Value, Threshold,
             Pid ! {gpu_alert, GpuId, AlertType, Value, Threshold},
             ok;
         false ->
-            ?LOG_WARNING("loom_gpu_monitor: gpu_id=~p coordinator ~p "
-                         "is dead, alert not sent", [GpuId, Pid]),
+            ?LOG_WARNING(#{msg => alert_coordinator_dead,
+                         gpu_id => GpuId,
+                         coordinator => Pid}),
             ok
     end.
 
@@ -364,26 +382,16 @@ log_metrics(GpuId, Metrics) ->
         true -> MemUsed / MemTotal * 100.0;
         false -> 0.0
     end,
-    ?LOG_INFO("loom_gpu_monitor: gpu_id=~p poll ok — "
-              "gpu_util=~s mem=~.1f/~.1fGB(~.1f%) "
-              "temp=~s power=~s ecc=~s",
-              [GpuId,
-               format_metric_float(GpuUtil, "%"),
-               MemUsed, MemTotal, MemPct,
-               format_metric_float(Temp, "C"),
-               format_metric_float(Power, "W"),
-               format_metric_int(Ecc)]),
+    ?LOG_INFO(#{msg => poll_ok,
+               gpu_id => GpuId,
+               gpu_util => GpuUtil,
+               mem_used_gb => MemUsed,
+               mem_total_gb => MemTotal,
+               mem_percent => MemPct,
+               temperature_c => Temp,
+               power_w => Power,
+               ecc_errors => Ecc}),
     ok.
-
--spec format_metric_float(float(), string()) -> io_lib:chars().
-format_metric_float(V, _Unit) when V < 0 -> "n/a";
-format_metric_float(V, Unit) ->
-    io_lib:format("~.1f~s", [V, Unit]).
-
--spec format_metric_int(integer()) -> io_lib:chars().
-format_metric_int(V) when V < 0 -> "n/a";
-format_metric_int(V) ->
-    integer_to_list(V).
 
 %%====================================================================
 %% Internal — backend resolution
@@ -399,10 +407,8 @@ resolve_backend(AllowMock) ->
     case try_backends(Backends) of
         {ok, Mod} -> {ok, Mod};
         false when AllowMock ->
-            ?LOG_WARNING("loom_gpu_monitor: no real GPU backend detected, "
-                         "falling back to MOCK backend. GPU metrics are "
-                         "SIMULATED. Set allow_mock_backend => false to "
-                         "fail instead."),
+            ?LOG_WARNING(#{msg => falling_back_to_mock_backend,
+                         detail => "GPU metrics are SIMULATED. Set allow_mock_backend => false to fail instead."}),
             {ok, loom_gpu_backend_mock};
         false ->
             {error, no_gpu_backend_detected}
@@ -415,8 +421,7 @@ try_backends([{Mod, Name} | Rest]) ->
         true ->
             {ok, Mod};
         false ->
-            ?LOG_INFO("loom_gpu_monitor: trying ~s backend — not detected",
-                      [Name]),
+            ?LOG_INFO(#{msg => backend_not_detected, backend => Name}),
             try_backends(Rest)
     end.
 
@@ -434,6 +439,13 @@ backend_module(Other)  -> {error, {unknown_backend, Other, [nvidia, apple, mock]
 schedule_poll(#data{poll_interval_ms = Interval} = Data) ->
     TRef = erlang:send_after(Interval, self(), poll),
     Data#data{timer_ref = TRef}.
+
+-spec get_engine_id_from_metadata() -> term().
+get_engine_id_from_metadata() ->
+    case logger:get_process_metadata() of
+        #{engine_id := EngineId} -> EngineId;
+        _ -> undefined
+    end.
 
 -spec cancel_timer(reference() | undefined) -> ok.
 cancel_timer(undefined) -> ok;

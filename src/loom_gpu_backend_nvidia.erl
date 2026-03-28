@@ -68,8 +68,7 @@ init(Opts) ->
                     end
             end;
         {error, timeout} ->
-            ?LOG_ERROR("loom_gpu_backend_nvidia: nvidia-smi timed out during "
-                       "init validation for GPU ~b", [GpuIndex]),
+            ?LOG_ERROR(#{msg => nvidia_smi_init_timeout, gpu_index => GpuIndex}),
             {error, {nvidia_smi_timeout, GpuIndex}};
         {error, Reason} ->
             {error, {nvidia_smi_failed, Reason}}
