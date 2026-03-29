@@ -6,7 +6,8 @@
 -module(loom_bench_stats).
 
 -export([
-    calculate/1
+    calculate/1,
+    check_thresholds/2
 ]).
 
 %% @doc Calculate statistics from a list of timing samples (microseconds).
@@ -29,6 +30,31 @@ calculate(Samples) ->
         p99 => percentile(Sorted, N, 0.99),
         samples => N
     }.
+
+%% @doc Check benchmark results against threshold map.
+%% Thresholds :: #{BenchmarkName => #{MetricName => MaxValueUs}}.
+%% Returns [{BenchmarkName, pass | fail, [{Metric, Actual, Limit}]}].
+-spec check_thresholds([{atom(), map()}], map()) ->
+    [{atom(), pass | fail, [{atom(), number(), number()}]}].
+check_thresholds(Results, Thresholds) ->
+    lists:map(fun({Name, Stats}) ->
+        case maps:get(Name, Thresholds, undefined) of
+            undefined ->
+                {Name, pass, []};
+            BenchThresholds ->
+                Violations = maps:fold(fun(Metric, Limit, Acc) ->
+                    Actual = maps:get(Metric, Stats),
+                    case Actual >= Limit of
+                        true -> [{Metric, Actual, Limit} | Acc];
+                        false -> Acc
+                    end
+                end, [], BenchThresholds),
+                case Violations of
+                    [] -> {Name, pass, []};
+                    _ -> {Name, fail, Violations}
+                end
+        end
+    end, Results).
 
 %%--------------------------------------------------------------------
 %% Internal functions

@@ -52,3 +52,31 @@ calculate_hundred_elements_test() ->
     ?assertEqual(95, maps:get(p95, Stats)),
     ?assertEqual(99, maps:get(p99, Stats)),
     ?assertEqual(100, maps:get(samples, Stats)).
+
+%%--------------------------------------------------------------------
+%% check_thresholds/2 tests
+%%--------------------------------------------------------------------
+
+check_thresholds_all_pass_test() ->
+    Stats = #{p50 => 500, p99 => 1500, min => 100, max => 2000,
+              mean => 600.0, p80 => 800, p95 => 1200, samples => 100},
+    Thresholds = #{health_roundtrip => #{p50 => 1000, p99 => 2000}},
+    Results = loom_bench_stats:check_thresholds([{health_roundtrip, Stats}], Thresholds),
+    ?assertMatch([{health_roundtrip, pass, []}], Results).
+
+check_thresholds_one_fail_test() ->
+    Stats = #{p50 => 1500, p99 => 3000, min => 100, max => 4000,
+              mean => 1800.0, p80 => 2000, p95 => 2500, samples => 100},
+    Thresholds = #{health_roundtrip => #{p50 => 1000, p99 => 2000}},
+    Results = loom_bench_stats:check_thresholds([{health_roundtrip, Stats}], Thresholds),
+    [{health_roundtrip, fail, Violations}] = Results,
+    ?assertEqual(2, length(Violations)),
+    ?assert(lists:any(fun({p50, _, _}) -> true; (_) -> false end, Violations)),
+    ?assert(lists:any(fun({p99, _, _}) -> true; (_) -> false end, Violations)).
+
+check_thresholds_no_threshold_defined_test() ->
+    Stats = #{p50 => 500, p99 => 1500, min => 100, max => 2000,
+              mean => 600.0, p80 => 800, p95 => 1200, samples => 100},
+    Thresholds = #{},
+    Results = loom_bench_stats:check_thresholds([{some_benchmark, Stats}], Thresholds),
+    ?assertMatch([{some_benchmark, pass, []}], Results).
