@@ -355,7 +355,7 @@ check_mlx() ->
         "0" -> ok;
         _ ->
             {skip, "MLX dependencies not installed. Run:\n"
-                   "  pip install mlx-lm>=0.20.0 huggingface-hub psutil"}
+                   "  pip3 install mlx-lm>=0.20.0 huggingface-hub psutil"}
     end.
 
 check_model_cached() ->

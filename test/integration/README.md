@@ -12,13 +12,14 @@ Tests the full Loom stack with a real MLX inference engine using Qwen2.5-0.5B.
 
 1. **Apple Silicon Mac** (M1/M2/M3/M4)
 2. **Erlang/OTP 27+** and rebar3
-3. **Python 3.11+**
+3. **Python 3.9+**
    ```bash
-   brew install python@3.11
+   # macOS includes Python 3.9+ via Xcode Command Line Tools.
+   # Or install a newer version: brew install python@3.12
    ```
 4. **MLX dependencies**
    ```bash
-   pip install mlx-lm>=0.20.0 huggingface-hub psutil
+   pip3 install mlx-lm>=0.20.0 huggingface-hub psutil
    ```
 5. **Download test model** (~400MB, cached for subsequent runs)
    ```bash
