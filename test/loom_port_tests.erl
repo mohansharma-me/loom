@@ -42,7 +42,7 @@ happy_path_startup_test() ->
     %% Shutdown
     ok = loom_port:shutdown(Pid),
     %% Wait for exit notification and drain EXIT signal
-    wait_for_exit(),
+    wait_for_exit(Pid),
     %% Process should be dead
     ?assertNot(is_process_alive(Pid)).
 
@@ -68,8 +68,10 @@ spawn_timeout_test() ->
     after 2000 ->
         ?assert(false)
     end,
-    %% Process should stop after timeout
-    timer:sleep(100),
+    %% Drain the EXIT signal from the linked loom_port process.
+    %% Without this, the stale EXIT pollutes subsequent tests' mailboxes
+    %% and causes flaky is_process_alive assertions.
+    receive {'EXIT', Pid, _} -> ok after 5000 -> ok end,
     ?assertNot(is_process_alive(Pid)).
 
 bad_command_path_test() ->
@@ -99,7 +101,7 @@ send_in_ready_state_test() ->
     end,
     %% Clean shutdown
     ok = loom_port:shutdown(Pid),
-    wait_for_exit(),
+    wait_for_exit(Pid),
     ?assertNot(is_process_alive(Pid)).
 
 send_not_ready_test() ->
@@ -122,7 +124,7 @@ send_not_ready_test() ->
     ?assertEqual({error, not_ready}, loom_port:send(Pid, {health})),
     %% Trigger shutdown and drain the timeout/exit notification
     ok = loom_port:shutdown(Pid),
-    wait_for_exit(),
+    wait_for_exit(Pid),
     ?assertNot(is_process_alive(Pid)).
 
 send_generate_and_receive_tokens_test() ->
@@ -138,7 +140,7 @@ send_generate_and_receive_tokens_test() ->
     ?assertEqual(5, length(TokenMsgs)),
     ?assertEqual(1, length(DoneMsgs)),
     ok = loom_port:shutdown(Pid),
-    wait_for_exit(),
+    wait_for_exit(Pid),
     ?assertNot(is_process_alive(Pid)).
 
 graceful_shutdown_test() ->
@@ -163,7 +165,7 @@ double_shutdown_test() ->
     ok = loom_port:shutdown(Pid),
     %% Second shutdown while already shutting_down — must not crash
     ok = loom_port:shutdown(Pid),
-    wait_for_exit(),
+    wait_for_exit(Pid),
     ?assertNot(is_process_alive(Pid)).
 
 send_during_shutdown_test() ->
@@ -175,7 +177,7 @@ send_during_shutdown_test() ->
     %% ASSUMPTION: The gen_statem processes the shutdown cast before this
     %% synchronous call, so the process is already in shutting_down state.
     ?assertEqual({error, not_ready}, loom_port:send(Pid, {health})),
-    wait_for_exit(),
+    wait_for_exit(Pid),
     ?assertNot(is_process_alive(Pid)).
 
 %% --- Additional helpers ---
@@ -190,16 +192,16 @@ wait_for_ready() ->
 
 %% @doc Wait for loom_port_exit or loom_port_timeout with a 10-second deadline,
 %% then drain the linked EXIT message so is_process_alive checks succeed.
-%% terminate/3 now calls loom_os:force_kill which shells out, so we must
-%% wait for the EXIT signal rather than assuming instant death.
-wait_for_exit() ->
+%% Matches EXIT from the specific Pid to avoid consuming stale EXIT signals
+%% left by previous tests in the same EUnit process.
+wait_for_exit(Pid) ->
     receive
         {loom_port_exit,    _, _} -> ok;
         {loom_port_timeout, _}    -> ok
     after 10000 ->
         error(wait_for_exit_timeout)
     end,
-    receive {'EXIT', _, _} -> ok after 5000 -> ok end.
+    receive {'EXIT', Pid, _} -> ok after 5000 -> ok end.
 
 %% --- noeol edge case ---
 
@@ -225,7 +227,7 @@ noeol_accumulation_test() ->
         error(noeol_test_timeout_waiting_for_health)
     end,
     loom_port:shutdown(Pid),
-    wait_for_exit().
+    wait_for_exit(Pid).
 
 %% --- Init validation tests ---
 
