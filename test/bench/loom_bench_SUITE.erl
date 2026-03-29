@@ -1,0 +1,398 @@
+%%%-------------------------------------------------------------------
+%%% @doc Benchmark suite for measuring Port communication overhead.
+%%%
+%%% Run: rebar3 ct --dir test/bench --suite loom_bench_SUITE
+%%% Strict: BENCH_STRICT=true rebar3 ct --dir test/bench --suite loom_bench_SUITE
+%%%
+%%% Results: _build/bench/results.json + console table
+%%% @end
+%%%-------------------------------------------------------------------
+-module(loom_bench_SUITE).
+
+-include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
+
+%% CT callbacks
+-export([
+    all/0,
+    groups/0,
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_group/2,
+    end_per_group/2,
+    init_per_testcase/2,
+    end_per_testcase/2
+]).
+
+%% Protocol group
+-export([
+    encode_decode_health/1,
+    encode_decode_generate/1,
+    encode_decode_large/1
+]).
+
+%% Port group
+-export([
+    health_roundtrip/1,
+    token_overhead/1
+]).
+
+%% Coordinator group
+-export([
+    coordinator_ets_read/1,
+    coordinator_generate/1
+]).
+
+%% Concurrent group
+-export([
+    concurrent_10/1,
+    concurrent_50/1,
+    concurrent_100/1
+]).
+
+%% Large messages group
+-export([
+    large_4k/1,
+    large_16k/1,
+    large_64k/1
+]).
+
+%% Pre-encoded inbound JSON for protocol benchmarks (avoids measuring
+%% binary construction overhead during the benchmark loop).
+-define(HEALTH_RESPONSE_JSON,
+    <<"{\"type\":\"health\",\"status\":\"ok\",\"gpu_util\":0.0,"
+      "\"mem_used_gb\":0.0,\"mem_total_gb\":80.0}">>).
+-define(TOKEN_RESPONSE_JSON,
+    <<"{\"type\":\"token\",\"id\":\"bench\",\"token_id\":1,"
+      "\"text\":\"hello\",\"finished\":false}">>).
+
+%% Threshold map: benchmark_name => #{metric => max_microseconds}.
+-define(THRESHOLDS, #{
+    health_roundtrip => #{p50 => 1000, p99 => 2000},
+    token_overhead => #{p50 => 500},
+    encode_decode_health => #{p50 => 100},
+    encode_decode_generate => #{p50 => 100}
+}).
+
+%%====================================================================
+%% CT callbacks
+%%====================================================================
+
+all() ->
+    [{group, protocol},
+     {group, port},
+     {group, coordinator},
+     {group, concurrent},
+     {group, large_messages}].
+
+groups() ->
+    [{protocol, [sequence], [
+        encode_decode_health,
+        encode_decode_generate,
+        encode_decode_large
+    ]},
+     {port, [sequence], [
+        health_roundtrip,
+        token_overhead
+    ]},
+     {coordinator, [sequence], [
+        coordinator_ets_read,
+        coordinator_generate
+    ]},
+     {concurrent, [sequence], [
+        concurrent_10,
+        concurrent_50,
+        concurrent_100
+    ]},
+     {large_messages, [sequence], [
+        large_4k,
+        large_16k,
+        large_64k
+    ]}].
+
+init_per_suite(Config) ->
+    %% ASSUMPTION: loom_config:load/1 must be called before starting loom
+    %% so that loom_app:start/2 skips file-based config resolution.
+    ok = loom_config:load(fixture_path("minimal.json")),
+    {ok, _} = application:ensure_all_started(loom),
+    %% ASSUMPTION: Each CT callback (init_per_suite, test cases, end_per_suite)
+    %% runs in a SEPARATE OS process in Common Test. A named_table ETS table is
+    %% owned by its creating process and is destroyed when that process exits.
+    %% To keep the table alive across all callbacks we spawn a dedicated keeper
+    %% process that owns the table and stays alive until end_per_suite sends it
+    %% a stop message.
+    Self = self(),
+    Keeper = spawn(fun() ->
+        ets:new(loom_bench_results, [named_table, public, set]),
+        Self ! {ets_ready, self()},
+        receive stop -> ok end
+    end),
+    receive
+        {ets_ready, Keeper} -> ok
+    after 5000 ->
+        ct:fail(ets_keeper_timeout)
+    end,
+    [{ets_keeper, Keeper} | Config].
+
+end_per_suite(Config) ->
+    %% Collect all results before stopping keeper
+    Results = lists:sort(ets:tab2list(loom_bench_results)),
+    %% Stop the ETS keeper process (deletes the table)
+    Keeper = ?config(ets_keeper, Config),
+    Keeper ! stop,
+
+    %% Print console table
+    Table = loom_bench_stats:format_table(Results),
+    ct:pal("~s", [Table]),
+
+    %% Check thresholds
+    ThresholdResults = loom_bench_stats:check_thresholds(Results, ?THRESHOLDS),
+    log_threshold_results(ThresholdResults),
+
+    %% Write JSON
+    StrictMode = os:getenv("BENCH_STRICT") =:= "true",
+    JsonBin = loom_bench_stats:to_json(Results,
+        #{strict_mode => StrictMode, thresholds => ?THRESHOLDS}),
+    %% ASSUMPTION: ?FILE resolves to test/bench/loom_bench_SUITE.erl so the
+    %% project root is two dirname calls up, giving an absolute path that is
+    %% CWD-independent (CT changes CWD during end_per_suite).
+    ProjectRoot = filename:dirname(filename:dirname(filename:dirname(?FILE))),
+    ResultsDir = filename:join([ProjectRoot, "_build", "bench"]),
+    filelib:ensure_dir(filename:join(ResultsDir, "dummy")),
+    ResultsFile = filename:join(ResultsDir, "results.json"),
+    ok = file:write_file(ResultsFile, JsonBin),
+    ct:pal("Results written to ~s", [ResultsFile]),
+
+    %% Enforce thresholds in strict mode
+    case StrictMode of
+        true ->
+            Failures = [R || {_, fail, _} = R <- ThresholdResults],
+            case Failures of
+                [] -> ok;
+                _ -> ct:fail({threshold_violations, Failures})
+            end;
+        false ->
+            ok
+    end,
+
+    application:stop(loom),
+    ok.
+
+init_per_group(protocol, Config) ->
+    Config;
+init_per_group(port, Config) ->
+    process_flag(trap_exit, true),
+    Opts = #{
+        command => python_cmd(),
+        args => [mock_adapter_path(), "--token-delay", "0",
+                 "--startup-delay", "0", "--heartbeat-interval", "5"],
+        owner => self(),
+        spawn_timeout_ms => 10000,
+        heartbeat_timeout_ms => 15000,
+        max_line_length => 1048576
+    },
+    {ok, Pid} = loom_port:start_link(Opts),
+    Ref = wait_port_ready(Pid),
+    [{port_pid, Pid}, {port_ref, Ref} | Config];
+init_per_group(Group, Config) when Group =:= coordinator;
+                                   Group =:= concurrent;
+                                   Group =:= large_messages ->
+    process_flag(trap_exit, true),
+    EngineId = list_to_binary("bench_" ++ atom_to_list(Group)),
+    MaxConcurrent = case Group of
+        concurrent -> 200;
+        _ -> 64
+    end,
+    CoordConfig = #{
+        engine_id => EngineId,
+        command => python_cmd(),
+        args => [mock_adapter_path(), "--token-delay", "0",
+                 "--startup-delay", "0", "--heartbeat-interval", "5"],
+        model => <<"mock">>,
+        backend => <<"mock">>,
+        startup_timeout_ms => 10000,
+        drain_timeout_ms => 5000,
+        max_concurrent => MaxConcurrent
+    },
+    {ok, Pid} = loom_engine_coordinator:start_link(CoordConfig),
+    wait_coordinator_ready(EngineId, 10000),
+    [{coord_pid, Pid}, {engine_id, EngineId} | Config].
+
+end_per_group(protocol, _Config) ->
+    ok;
+end_per_group(port, Config) ->
+    PortPid = ?config(port_pid, Config),
+    loom_port:shutdown(PortPid),
+    wait_process_dead(PortPid, 5000),
+    ok;
+end_per_group(_Group, Config) ->
+    CoordPid = ?config(coord_pid, Config),
+    loom_engine_coordinator:stop(CoordPid),
+    wait_process_dead(CoordPid, 5000),
+    ok.
+
+init_per_testcase(_TC, Config) ->
+    Config.
+
+end_per_testcase(_TC, _Config) ->
+    ok.
+
+%%====================================================================
+%% Protocol group benchmarks
+%%====================================================================
+
+encode_decode_health(_Config) ->
+    Msg = {health},
+    Samples = time_iterations(fun() ->
+        _Encoded = loom_protocol:encode(Msg),
+        {ok, _} = loom_protocol:decode(?HEALTH_RESPONSE_JSON)
+    end, 10000),
+    store_result(encode_decode_health, Samples).
+
+encode_decode_generate(_Config) ->
+    Msg = {generate, <<"bench-id">>, <<"Hello world">>, #{max_tokens => 100}},
+    Samples = time_iterations(fun() ->
+        _Encoded = loom_protocol:encode(Msg),
+        {ok, _} = loom_protocol:decode(?TOKEN_RESPONSE_JSON)
+    end, 10000),
+    store_result(encode_decode_generate, Samples).
+
+encode_decode_large(_Config) ->
+    Sizes = [{encode_large_4k, 4096},
+             {encode_large_16k, 16384},
+             {encode_large_64k, 65536}],
+    lists:foreach(fun({Name, Size}) ->
+        Prompt = binary:copy(<<"x">>, Size),
+        Msg = {generate, <<"bench-id">>, Prompt, #{max_tokens => 100}},
+        Samples = time_iterations(fun() ->
+            _Encoded = loom_protocol:encode(Msg)
+        end, 1000),
+        store_result(Name, Samples)
+    end, Sizes).
+
+%%====================================================================
+%% Port group benchmarks (placeholder — implemented in Task 6)
+%%====================================================================
+
+health_roundtrip(_Config) ->
+    store_result(health_roundtrip, [0]).
+
+token_overhead(_Config) ->
+    store_result(token_overhead, [0]).
+
+%%====================================================================
+%% Coordinator group benchmarks (placeholder — implemented in Task 7)
+%%====================================================================
+
+coordinator_ets_read(_Config) ->
+    store_result(coordinator_ets_read, [0]).
+
+coordinator_generate(_Config) ->
+    store_result(coordinator_generate, [0]).
+
+%%====================================================================
+%% Concurrent group benchmarks (placeholder — implemented in Task 8)
+%%====================================================================
+
+concurrent_10(_Config) ->
+    store_result(concurrent_10, [0]).
+
+concurrent_50(_Config) ->
+    store_result(concurrent_50, [0]).
+
+concurrent_100(_Config) ->
+    store_result(concurrent_100, [0]).
+
+%%====================================================================
+%% Large messages group benchmarks (placeholder — implemented in Task 9)
+%%====================================================================
+
+large_4k(_Config) ->
+    store_result(large_4k, [0]).
+
+large_16k(_Config) ->
+    store_result(large_16k, [0]).
+
+large_64k(_Config) ->
+    store_result(large_64k, [0]).
+
+%%====================================================================
+%% Helpers
+%%====================================================================
+
+%% @doc Time N iterations of Fun, return list of microsecond timings.
+time_iterations(Fun, N) ->
+    lists:map(fun(_) ->
+        T0 = erlang:monotonic_time(microsecond),
+        Fun(),
+        erlang:monotonic_time(microsecond) - T0
+    end, lists:seq(1, N)).
+
+%% @doc Store benchmark result in the shared ETS table.
+store_result(Name, Samples) ->
+    Stats = loom_bench_stats:calculate(Samples),
+    true = ets:insert(loom_bench_results, {Name, Stats}).
+
+%% @doc Path to the mock adapter script.
+mock_adapter_path() ->
+    filename:join([code:priv_dir(loom), "scripts", "mock_adapter.py"]).
+
+%% @doc Python 3 executable path.
+python_cmd() ->
+    os:find_executable("python3").
+
+%% @doc Path to test fixture file.
+%% ASSUMPTION: ?FILE resolves to the absolute path of this source file at
+%% compile time. Since this suite lives in test/bench/, fixtures are one
+%% level up at test/fixtures/.
+fixture_path(Filename) ->
+    TestDir = filename:dirname(filename:dirname(?FILE)),
+    filename:join([TestDir, "fixtures", Filename]).
+
+%% @doc Wait for loom_port to send ready message, return the port ref.
+wait_port_ready(Pid) ->
+    receive
+        {loom_port_ready, Ref, _Model, _Backend} -> Ref
+    after 10000 ->
+        ct:fail({port_ready_timeout, loom_port:get_state(Pid)})
+    end.
+
+%% @doc Poll coordinator status until ready or timeout.
+wait_coordinator_ready(EngineId, Timeout) when Timeout > 0 ->
+    case catch loom_engine_coordinator:get_status(EngineId) of
+        ready -> ok;
+        _ ->
+            timer:sleep(50),
+            wait_coordinator_ready(EngineId, Timeout - 50)
+    end;
+wait_coordinator_ready(EngineId, _Timeout) ->
+    ct:fail({coordinator_ready_timeout, EngineId}).
+
+%% @doc Wait for a process to terminate.
+wait_process_dead(Pid, Timeout) when Timeout > 0 ->
+    case is_process_alive(Pid) of
+        false -> ok;
+        true ->
+            timer:sleep(50),
+            wait_process_dead(Pid, Timeout - 50)
+    end;
+wait_process_dead(Pid, _Timeout) ->
+    ct:fail({process_still_alive, Pid}).
+
+%% @doc Log threshold check results.
+log_threshold_results(Results) ->
+    Passed = length([R || {_, pass, _} = R <- Results]),
+    Failed = length([R || {_, fail, _} = R <- Results]),
+    Total = Passed + Failed,
+    lists:foreach(fun
+        ({Name, pass, _}) ->
+            ct:pal("[PASS] ~s", [Name]);
+        ({Name, fail, Violations}) ->
+            lists:foreach(fun({Metric, Actual, Limit}) ->
+                ct:pal("[WARN] ~s.~s: ~s >= ~s (limit)",
+                    [Name, Metric,
+                     loom_bench_stats:format_duration(Actual),
+                     loom_bench_stats:format_duration(Limit)])
+            end, Violations)
+    end, Results),
+    ct:pal("Threshold checks: ~B/~B PASS", [Passed, Total]).
