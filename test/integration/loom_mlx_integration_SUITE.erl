@@ -116,14 +116,17 @@ chat_completion_openai_test(Config) ->
     {ok, _} = gun:await_up(ConnPid),
     Body = loom_json:encode(#{
         <<"model">> => ?MODEL,
+        <<"max_tokens">> => 128,
         <<"messages">> => [#{<<"role">> => <<"user">>,
                              <<"content">> => <<"Say hello in one sentence.">>}],
         <<"stream">> => false
     }),
+    T0 = erlang:monotonic_time(millisecond),
     StreamRef = gun:post(ConnPid, "/v1/chat/completions",
         [{<<"content-type">>, <<"application/json">>}], Body),
     {response, nofin, 200, _Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
     {ok, RespBody} = gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    Elapsed = erlang:monotonic_time(millisecond) - T0,
     Decoded = loom_json:decode(RespBody),
     ?assertEqual(<<"chat.completion">>, maps:get(<<"object">>, Decoded)),
     [Choice] = maps:get(<<"choices">>, Decoded),
@@ -136,9 +139,10 @@ chat_completion_openai_test(Config) ->
     %% does not currently report prompt token counts to the Erlang side.
     Usage = maps:get(<<"usage">>, Decoded),
     ?assert(is_integer(maps:get(<<"prompt_tokens">>, Usage))),
-    ?assert(maps:get(<<"completion_tokens">>, Usage) > 0),
-    ct:pal("OpenAI response (~B tokens): ~s",
-           [maps:get(<<"completion_tokens">>, Usage), Content]),
+    CompletionTokens = maps:get(<<"completion_tokens">>, Usage),
+    ?assert(CompletionTokens > 0),
+    ct:pal("OpenAI non-streaming: ~Bms, ~B tokens (~.1f tok/s)",
+           [Elapsed, CompletionTokens, CompletionTokens * 1000 / Elapsed]),
     gun:close(ConnPid).
 
 chat_completion_anthropic_test(Config) ->
@@ -147,14 +151,16 @@ chat_completion_anthropic_test(Config) ->
     {ok, _} = gun:await_up(ConnPid),
     Body = loom_json:encode(#{
         <<"model">> => ?MODEL,
-        <<"max_tokens">> => 64,
+        <<"max_tokens">> => 128,
         <<"messages">> => [#{<<"role">> => <<"user">>,
                              <<"content">> => <<"Say hello in one sentence.">>}]
     }),
+    T0 = erlang:monotonic_time(millisecond),
     StreamRef = gun:post(ConnPid, "/v1/messages",
         [{<<"content-type">>, <<"application/json">>}], Body),
     {response, nofin, 200, _Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
     {ok, RespBody} = gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    Elapsed = erlang:monotonic_time(millisecond) - T0,
     Decoded = loom_json:decode(RespBody),
     ?assertEqual(<<"message">>, maps:get(<<"type">>, Decoded)),
     ?assertEqual(<<"assistant">>, maps:get(<<"role">>, Decoded)),
@@ -168,9 +174,10 @@ chat_completion_anthropic_test(Config) ->
     %% does not currently report prompt token counts to the Erlang side.
     Usage = maps:get(<<"usage">>, Decoded),
     ?assert(is_integer(maps:get(<<"input_tokens">>, Usage))),
-    ?assert(maps:get(<<"output_tokens">>, Usage) > 0),
-    ct:pal("Anthropic response (~B tokens): ~s",
-           [maps:get(<<"output_tokens">>, Usage), Text]),
+    OutputTokens = maps:get(<<"output_tokens">>, Usage),
+    ?assert(OutputTokens > 0),
+    ct:pal("Anthropic non-streaming: ~Bms, ~B tokens (~.1f tok/s)",
+           [Elapsed, OutputTokens, OutputTokens * 1000 / Elapsed]),
     gun:close(ConnPid).
 
 sse_streaming_openai_test(Config) ->
@@ -179,16 +186,19 @@ sse_streaming_openai_test(Config) ->
     {ok, _} = gun:await_up(ConnPid),
     Body = loom_json:encode(#{
         <<"model">> => ?MODEL,
+        <<"max_tokens">> => 128,
         <<"messages">> => [#{<<"role">> => <<"user">>,
                              <<"content">> => <<"Say hello in one sentence.">>}],
         <<"stream">> => true
     }),
+    T0 = erlang:monotonic_time(millisecond),
     StreamRef = gun:post(ConnPid, "/v1/chat/completions",
         [{<<"content-type">>, <<"application/json">>}], Body),
     {response, nofin, 200, Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
     ContentType = proplists:get_value(<<"content-type">>, Headers),
     ?assertMatch(<<"text/event-stream", _/binary>>, ContentType),
     Events = collect_sse_data(ConnPid, StreamRef, []),
+    Elapsed = erlang:monotonic_time(millisecond) - T0,
     ?assert(length(Events) >= 3),
     ?assertEqual(<<"[DONE]">>, lists:last(Events)),
     JsonEvents = lists:droplast(Events),
@@ -210,10 +220,11 @@ sse_streaming_openai_test(Config) ->
             _ -> false
         end
     end, JsonEvents),
+    TokenCount = length(Tokens),
     FullContent = iolist_to_binary(Tokens),
     ?assert(byte_size(FullContent) > 0),
-    ct:pal("OpenAI streaming: ~B chunks, content: ~s",
-           [length(JsonEvents), FullContent]),
+    ct:pal("OpenAI streaming: ~Bms, ~B tokens (~.1f tok/s)",
+           [Elapsed, TokenCount, TokenCount * 1000 / Elapsed]),
     gun:close(ConnPid).
 
 sse_streaming_anthropic_test(Config) ->
@@ -222,11 +233,12 @@ sse_streaming_anthropic_test(Config) ->
     {ok, _} = gun:await_up(ConnPid),
     Body = loom_json:encode(#{
         <<"model">> => ?MODEL,
-        <<"max_tokens">> => 64,
+        <<"max_tokens">> => 128,
         <<"messages">> => [#{<<"role">> => <<"user">>,
                              <<"content">> => <<"Say hello in one sentence.">>}],
         <<"stream">> => true
     }),
+    T0 = erlang:monotonic_time(millisecond),
     StreamRef = gun:post(ConnPid, "/v1/messages",
         [{<<"content-type">>, <<"application/json">>}], Body),
     {response, nofin, 200, Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
@@ -251,10 +263,11 @@ sse_streaming_anthropic_test(Config) ->
             end;
         (_) -> false
     end, Events),
+    Elapsed = erlang:monotonic_time(millisecond) - T0,
     FullText = iolist_to_binary(DeltaTexts),
     ?assert(byte_size(FullText) > 0),
-    ct:pal("Anthropic streaming: ~B deltas, content: ~s",
-           [DeltaCount, FullText]),
+    ct:pal("Anthropic streaming: ~Bms, ~B tokens (~.1f tok/s)",
+           [Elapsed, DeltaCount, DeltaCount * 1000 / Elapsed]),
     gun:close(ConnPid).
 
 gpu_metrics_sanity_test(Config) ->

@@ -511,14 +511,20 @@ If prerequisites are missing, the suite **skips** (not fails) with setup instruc
 
 ### Results
 
-Measured on Apple M3 Pro (32GB), Qwen2.5-0.5B-Instruct-4bit, 2026-03-29.
+Measured on Apple M3 Pro (32GB), Qwen2.5-0.5B-Instruct-4bit, OTP 28, 2026-03-29. All tests use `max_tokens=128`.
 
-| Metric | Value |
-|--------|-------|
-| Model load time | ~1.6s |
-| Crash recovery (SIGKILL → ready) | ~1.6s |
-| OpenAI streaming | 257 tokens generated |
-| Anthropic streaming | 64 tokens generated |
+| Test | Tokens | Latency | Throughput |
+|------|--------|---------|------------|
+| OpenAI non-streaming | 128 | 600ms | 213 tok/s |
+| Anthropic non-streaming | 128 | 536ms | 239 tok/s |
+| OpenAI streaming (SSE) | 128 | 544ms | 235 tok/s |
+| Anthropic streaming (SSE) | 128 | 522ms | 245 tok/s |
+
+| Lifecycle | Value |
+|-----------|-------|
+| Model load (cold) | ~1.6s |
+| Crash recovery (SIGKILL → ready) | ~1.5s |
+| Memory usage (unified) | 19.0 / 32.0 GB |
 | Full suite runtime | ~8s |
 
 ---
