@@ -181,19 +181,20 @@ end_per_suite(Config) ->
 init_per_group(protocol, Config) ->
     Config;
 init_per_group(port, Config) ->
-    process_flag(trap_exit, true),
-    Opts = #{
-        command => python_cmd(),
-        args => [mock_adapter_path(), "--token-delay", "0",
-                 "--startup-delay", "0", "--heartbeat-interval", "5"],
-        owner => self(),
-        spawn_timeout_ms => 10000,
-        heartbeat_timeout_ms => 15000,
-        max_line_length => 1048576
-    },
-    {ok, Pid} = loom_port:start_link(Opts),
-    Ref = wait_port_ready(Pid),
-    [{port_pid, Pid}, {port_ref, Ref} | Config];
+    %% ASSUMPTION: init_per_group runs in a short-lived CT process that dies
+    %% after returning Config. loom_port monitors its owner; if owner =>
+    %% self() the port shuts down immediately when init exits.
+    %% Fix: spawn a long-lived keeper process as the port owner. The keeper
+    %% forwards loom_port_ready/loom_port_msg to whichever process last
+    %% called {register, Pid}. Benchmarks register self() before measuring.
+    Self = self(),
+    Keeper = spawn(fun() -> port_owner_keeper(Self) end),
+    receive
+        {port_owner_keeper_ready, Keeper, Pid, Ref} ->
+            [{port_pid, Pid}, {port_ref, Ref}, {port_keeper, Keeper} | Config]
+    after 15000 ->
+        ct:fail(port_keeper_timeout)
+    end;
 init_per_group(Group, Config) when Group =:= coordinator;
                                    Group =:= concurrent;
                                    Group =:= large_messages ->
@@ -221,9 +222,11 @@ init_per_group(Group, Config) when Group =:= coordinator;
 end_per_group(protocol, _Config) ->
     ok;
 end_per_group(port, Config) ->
+    Keeper = ?config(port_keeper, Config),
     PortPid = ?config(port_pid, Config),
     loom_port:shutdown(PortPid),
     wait_process_dead(PortPid, 5000),
+    Keeper ! stop,
     ok;
 end_per_group(_Group, Config) ->
     CoordPid = ?config(coord_pid, Config),
@@ -271,14 +274,49 @@ encode_decode_large(_Config) ->
     end, Sizes).
 
 %%====================================================================
-%% Port group benchmarks (placeholder — implemented in Task 6)
+%% Port group benchmarks
 %%====================================================================
 
-health_roundtrip(_Config) ->
-    store_result(health_roundtrip, [0]).
+health_roundtrip(Config) ->
+    PortPid = ?config(port_pid, Config),
+    PortRef = ?config(port_ref, Config),
+    Keeper = ?config(port_keeper, Config),
+    %% Register this test process as the current receiver for port messages.
+    Keeper ! {register, self()},
+    Samples = lists:map(fun(_) ->
+        T0 = erlang:monotonic_time(microsecond),
+        ok = loom_port:send(PortPid, {health}),
+        receive
+            {loom_port_msg, PortRef, {health_response, _, _, _, _}} ->
+                erlang:monotonic_time(microsecond) - T0
+        after 5000 ->
+            ct:fail(health_response_timeout)
+        end
+    end, lists:seq(1, 1000)),
+    store_result(health_roundtrip, Samples).
 
-token_overhead(_Config) ->
-    store_result(token_overhead, [0]).
+token_overhead(Config) ->
+    PortPid = ?config(port_pid, Config),
+    PortRef = ?config(port_ref, Config),
+    Keeper = ?config(port_keeper, Config),
+    %% Register this test process as the current receiver for port messages.
+    Keeper ! {register, self()},
+    %% ASSUMPTION: Mock adapter produces 5 tokens per generate request.
+    TokensPerRequest = 5,
+    AllSamples = lists:flatmap(fun(I) ->
+        Id = integer_to_binary(I),
+        ok = loom_port:send(PortPid,
+            {generate, Id, <<"bench prompt">>, #{max_tokens => 100}}),
+        TokenTimestamps = collect_port_token_timestamps(PortRef, Id, TokensPerRequest),
+        %% Wait for done message
+        receive
+            {loom_port_msg, PortRef, {done, Id, _, _}} -> ok
+        after 5000 ->
+            ct:fail(done_timeout)
+        end,
+        inter_token_deltas(TokenTimestamps)
+    end, lists:seq(1, 500)),
+    store_result(token_overhead, AllSamples).
 
 %%====================================================================
 %% Coordinator group benchmarks (placeholder — implemented in Task 7)
@@ -349,14 +387,6 @@ fixture_path(Filename) ->
     TestDir = filename:dirname(filename:dirname(?FILE)),
     filename:join([TestDir, "fixtures", Filename]).
 
-%% @doc Wait for loom_port to send ready message, return the port ref.
-wait_port_ready(Pid) ->
-    receive
-        {loom_port_ready, Ref, _Model, _Backend} -> Ref
-    after 10000 ->
-        ct:fail({port_ready_timeout, loom_port:get_state(Pid)})
-    end.
-
 %% @doc Poll coordinator status until ready or timeout.
 wait_coordinator_ready(EngineId, Timeout) when Timeout > 0 ->
     case catch loom_engine_coordinator:get_status(EngineId) of
@@ -396,3 +426,73 @@ log_threshold_results(Results) ->
             end, Violations)
     end, Results),
     ct:pal("Threshold checks: ~B/~B PASS", [Passed, Total]).
+
+%% @doc Long-lived keeper process that owns loom_port across CT process boundaries.
+%%
+%% CT runs init_per_group, each test case, and end_per_group in separate OS
+%% processes. loom_port monitors its owner and shuts down when the owner dies.
+%% This keeper stays alive for the entire group, forwarding port messages to
+%% whichever test case PID last sent {register, Pid}.
+%%
+%% Protocol:
+%%   {register, Pid}  — set the forward target
+%%   stop             — shut down the keeper
+%%
+%% On startup the caller (init_per_group process) receives:
+%%   {port_owner_keeper_ready, KeeperPid, PortPid, PortRef}
+port_owner_keeper(Caller) ->
+    Opts = #{
+        command => python_cmd(),
+        args => [mock_adapter_path(), "--token-delay", "0",
+                 "--startup-delay", "0", "--heartbeat-interval", "5"],
+        owner => self(),
+        spawn_timeout_ms => 10000,
+        heartbeat_timeout_ms => 15000,
+        max_line_length => 1048576
+    },
+    {ok, Pid} = loom_port:start_link(Opts),
+    Ref = receive
+        {loom_port_ready, R, _Model, _Backend} -> R
+    after 15000 ->
+        ct:fail(port_keeper_ready_timeout)
+    end,
+    Caller ! {port_owner_keeper_ready, self(), Pid, Ref},
+    port_owner_keeper_loop(undefined).
+
+port_owner_keeper_loop(Receiver) ->
+    receive
+        {register, Pid} ->
+            port_owner_keeper_loop(Pid);
+        stop ->
+            ok;
+        Msg when Receiver =/= undefined ->
+            Receiver ! Msg,
+            port_owner_keeper_loop(Receiver);
+        _Msg ->
+            %% No receiver registered yet — drop
+            port_owner_keeper_loop(Receiver)
+    end.
+
+%% @doc Collect timestamps for each token arrival from loom_port.
+%% Returns list of monotonic timestamps in microseconds.
+collect_port_token_timestamps(PortRef, Id, N) ->
+    collect_port_token_timestamps(PortRef, Id, N, []).
+
+collect_port_token_timestamps(_PortRef, _Id, 0, Acc) ->
+    lists:reverse(Acc);
+collect_port_token_timestamps(PortRef, Id, N, Acc) ->
+    receive
+        {loom_port_msg, PortRef, {token, Id, _, _, _}} ->
+            T = erlang:monotonic_time(microsecond),
+            collect_port_token_timestamps(PortRef, Id, N - 1, [T | Acc])
+    after 5000 ->
+        ct:fail({token_timeout, {remaining, N}})
+    end.
+
+%% @doc Calculate deltas between consecutive timestamps.
+%% [T1, T2, T3] -> [T2-T1, T3-T2]
+inter_token_deltas([]) -> [];
+inter_token_deltas([_]) -> [];
+inter_token_deltas(Timestamps) ->
+    Pairs = lists:zip(lists:droplast(Timestamps), tl(Timestamps)),
+    [B - A || {A, B} <- Pairs].
