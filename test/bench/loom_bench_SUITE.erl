@@ -377,21 +377,42 @@ concurrent_100(Config) ->
     run_concurrent_bench(100, 20, Config).
 
 %%====================================================================
-%% Large messages group benchmarks (placeholder — implemented in Task 9)
+%% Large messages group benchmarks
 %%====================================================================
 
-large_4k(_Config) ->
-    store_result(large_4k, [0]).
+large_4k(Config) ->
+    run_large_message_bench(large_4k, 4096, 200, Config).
 
-large_16k(_Config) ->
-    store_result(large_16k, [0]).
+large_16k(Config) ->
+    run_large_message_bench(large_16k, 16384, 100, Config).
 
-large_64k(_Config) ->
-    store_result(large_64k, [0]).
+large_64k(Config) ->
+    run_large_message_bench(large_64k, 65536, 50, Config).
 
 %%====================================================================
 %% Helpers
 %%====================================================================
+
+%% @doc Benchmark generate requests with a large prompt through the coordinator.
+%% ASSUMPTION: Mock adapter produces 5 tokens per generate request regardless
+%% of prompt size.
+run_large_message_bench(Name, PromptSize, Iterations, Config) ->
+    CoordPid = ?config(coord_pid, Config),
+    TokensPerRequest = 5,
+    Prompt = binary:copy(<<"x">>, PromptSize),
+    Samples = lists:map(fun(_) ->
+        T0 = erlang:monotonic_time(microsecond),
+        {ok, ReqId} = loom_engine_coordinator:generate(
+            CoordPid, Prompt, #{max_tokens => 100}),
+        collect_coordinator_tokens(ReqId, TokensPerRequest),
+        receive
+            {loom_done, ReqId, _Stats} ->
+                erlang:monotonic_time(microsecond) - T0
+        after 10000 ->
+            ct:fail({large_msg_done_timeout, Name})
+        end
+    end, lists:seq(1, Iterations)),
+    store_result(Name, Samples).
 
 %% @doc Time N iterations of Fun, return list of microsecond timings.
 time_iterations(Fun, N) ->
