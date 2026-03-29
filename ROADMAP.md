@@ -48,7 +48,7 @@ Standards and practices that apply across all phases.
 - [x] Crash recovery test: kill engine → auto-restart → system recovers — [#13](https://github.com/mohansharma-me/loom/issues/13) `P0-12`
 - [x] Port overhead benchmark (target: <1ms per message) — [#14](https://github.com/mohansharma-me/loom/issues/14) `P0-13`
 - [x] Integration test suite for real vLLM on GPU hardware — [#15](https://github.com/mohansharma-me/loom/issues/15) `P0-14`
-- [ ] Phase 0 architecture docs and demo script — [#16](https://github.com/mohansharma-me/loom/issues/16) `P0-15`
+- [x] Phase 0 architecture docs and demo script — [#16](https://github.com/mohansharma-me/loom/issues/16) `P0-15`
 
 ---
 
@@ -136,13 +136,13 @@ Standards and practices that apply across all phases.
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 4 | 4 | 0 | 0 |
-| Phase 0 | 18 | 17 | 0 | 1 |
+| Phase 0 | 18 | 18 | 0 | 0 |
 | Phase 1 | 11 | 0 | 0 | 11 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **54** | **21** | **0** | **33** |
+| **Total** | **54** | **22** | **0** | **32** |
 
 ## What's Next
 
