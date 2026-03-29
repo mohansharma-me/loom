@@ -80,3 +80,67 @@ check_thresholds_no_threshold_defined_test() ->
     Thresholds = #{},
     Results = loom_bench_stats:check_thresholds([{some_benchmark, Stats}], Thresholds),
     ?assertMatch([{some_benchmark, pass, []}], Results).
+
+%%--------------------------------------------------------------------
+%% to_json/2 tests
+%%--------------------------------------------------------------------
+
+to_json_structure_test() ->
+    Stats = #{p50 => 420, p80 => 510, p95 => 780, p99 => 1100,
+              min => 350, max => 2300, mean => 480.5, samples => 1000},
+    Thresholds = #{health_roundtrip => #{p50 => 1000, p99 => 2000}},
+    Json = loom_bench_stats:to_json(
+        [{health_roundtrip, Stats}],
+        #{strict_mode => false, thresholds => Thresholds}),
+    ?assert(is_binary(Json)),
+    Decoded = json:decode(Json),
+    ?assert(is_map(Decoded)),
+    ?assertMatch(#{<<"benchmarks">> := _}, Decoded),
+    ?assertMatch(#{<<"pass">> := true}, Decoded),
+    ?assertMatch(#{<<"strict_mode">> := false}, Decoded),
+    Bench = maps:get(<<"health_roundtrip">>, maps:get(<<"benchmarks">>, Decoded)),
+    ?assertEqual(420, maps:get(<<"p50_us">>, Bench)),
+    ?assertEqual(1100, maps:get(<<"p99_us">>, Bench)),
+    ?assertEqual(1000, maps:get(<<"samples">>, Bench)),
+    ?assertEqual(true, maps:get(<<"threshold_pass">>, Bench)).
+
+to_json_failing_threshold_test() ->
+    Stats = #{p50 => 1500, p80 => 1800, p95 => 2200, p99 => 3000,
+              min => 500, max => 4000, mean => 1600.0, samples => 100},
+    Thresholds = #{health_roundtrip => #{p50 => 1000}},
+    Json = loom_bench_stats:to_json(
+        [{health_roundtrip, Stats}],
+        #{strict_mode => false, thresholds => Thresholds}),
+    Decoded = json:decode(Json),
+    ?assertMatch(#{<<"pass">> := false}, Decoded),
+    Bench = maps:get(<<"health_roundtrip">>, maps:get(<<"benchmarks">>, Decoded)),
+    ?assertEqual(false, maps:get(<<"threshold_pass">>, Bench)).
+
+%%--------------------------------------------------------------------
+%% format_table/1 tests
+%%--------------------------------------------------------------------
+
+format_table_returns_iolist_test() ->
+    Stats = #{p50 => 420, p80 => 510, p95 => 780, p99 => 1100,
+              min => 350, max => 2300, mean => 480.5, samples => 1000},
+    Output = loom_bench_stats:format_table([{health_roundtrip, Stats}]),
+    Flat = lists:flatten(Output),
+    ?assert(is_list(Flat)),
+    %% Should contain the benchmark name
+    ?assert(string:find(Flat, "health_roundtrip") =/= nomatch),
+    %% Should contain formatted durations
+    ?assert(string:find(Flat, "420us") =/= nomatch).
+
+%%--------------------------------------------------------------------
+%% format_duration/1 tests
+%%--------------------------------------------------------------------
+
+format_duration_microseconds_test() ->
+    ?assertEqual("420us", lists:flatten(loom_bench_stats:format_duration(420))),
+    ?assertEqual("3us", lists:flatten(loom_bench_stats:format_duration(3))),
+    ?assertEqual("999us", lists:flatten(loom_bench_stats:format_duration(999))).
+
+format_duration_milliseconds_test() ->
+    ?assertEqual("1.0ms", lists:flatten(loom_bench_stats:format_duration(1000))),
+    ?assertEqual("1.2ms", lists:flatten(loom_bench_stats:format_duration(1200))),
+    ?assertEqual("4.1ms", lists:flatten(loom_bench_stats:format_duration(4100))).

@@ -7,7 +7,10 @@
 
 -export([
     calculate/1,
-    check_thresholds/2
+    check_thresholds/2,
+    to_json/2,
+    format_table/1,
+    format_duration/1
 ]).
 
 %% @doc Calculate statistics from a list of timing samples (microseconds).
@@ -56,6 +59,74 @@ check_thresholds(Results, Thresholds) ->
         end
     end, Results).
 
+%% @doc Generate JSON binary from benchmark results.
+%% Opts :: #{strict_mode => boolean(), thresholds => map()}.
+-spec to_json([{atom(), map()}], map()) -> binary().
+to_json(Results, Opts) ->
+    StrictMode = maps:get(strict_mode, Opts, false),
+    Thresholds = maps:get(thresholds, Opts, #{}),
+    BenchMap = lists:foldl(fun({Name, Stats}, Acc) ->
+        ThresholdPass = check_single_threshold(Name, Stats, Thresholds),
+        Entry = #{
+            min_us => maps:get(min, Stats),
+            max_us => maps:get(max, Stats),
+            mean_us => maps:get(mean, Stats),
+            p50_us => maps:get(p50, Stats),
+            p80_us => maps:get(p80, Stats),
+            p95_us => maps:get(p95, Stats),
+            p99_us => maps:get(p99, Stats),
+            samples => maps:get(samples, Stats),
+            threshold_pass => ThresholdPass
+        },
+        Acc#{Name => Entry}
+    end, #{}, Results),
+    AllPass = lists:all(fun({_, #{threshold_pass := P}}) -> P end,
+                        maps:to_list(BenchMap)),
+    Timestamp = list_to_binary(calendar:system_time_to_rfc3339(
+        erlang:system_time(second), [{offset, "Z"}])),
+    OtpVersion = list_to_binary(erlang:system_info(otp_release)),
+    loom_json:encode(#{
+        timestamp => Timestamp,
+        otp_version => OtpVersion,
+        strict_mode => StrictMode,
+        benchmarks => BenchMap,
+        pass => AllPass
+    }).
+
+%% @doc Format benchmark results as a console table (iolist).
+-spec format_table([{atom(), map()}]) -> iolist().
+format_table(Results) ->
+    Header = io_lib:format(
+        "~n============================================================~n"
+        "  Loom Port Benchmark Results~n"
+        "============================================================~n"
+        " ~-28s ~8s ~8s ~8s ~8s ~8s ~8s~n"
+        " ~s~n",
+        ["Benchmark", "p50", "p80", "p95", "p99", "min", "max",
+         lists:duplicate(76, $-)]),
+    Rows = lists:map(fun({Name, Stats}) ->
+        io_lib:format(" ~-28s ~8s ~8s ~8s ~8s ~8s ~8s~n", [
+            atom_to_list(Name),
+            format_duration(maps:get(p50, Stats)),
+            format_duration(maps:get(p80, Stats)),
+            format_duration(maps:get(p95, Stats)),
+            format_duration(maps:get(p99, Stats)),
+            format_duration(maps:get(min, Stats)),
+            format_duration(maps:get(max, Stats))
+        ])
+    end, Results),
+    Footer = io_lib:format(
+        "============================================================~n", []),
+    [Header, Rows, Footer].
+
+%% @doc Format a duration in microseconds as a human-readable string.
+-spec format_duration(number()) -> iolist().
+format_duration(Us) when Us < 1000 ->
+    io_lib:format("~Bus", [Us]);
+format_duration(Us) ->
+    Ms = Us / 1000,
+    io_lib:format("~.1fms", [Ms]).
+
 %%--------------------------------------------------------------------
 %% Internal functions
 %%--------------------------------------------------------------------
@@ -65,3 +136,14 @@ check_thresholds(Results, Thresholds) ->
 percentile(Sorted, N, P) ->
     Index = erlang:ceil(N * P),
     lists:nth(Index, Sorted).
+
+%% @doc Check if a single benchmark passes its thresholds.
+check_single_threshold(Name, Stats, Thresholds) ->
+    case maps:get(Name, Thresholds, undefined) of
+        undefined -> true;
+        BenchThresholds ->
+            maps:fold(fun(Metric, Limit, Acc) ->
+                Actual = maps:get(Metric, Stats),
+                Acc andalso (Actual < Limit)
+            end, true, BenchThresholds)
+    end.
