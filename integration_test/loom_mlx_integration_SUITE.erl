@@ -476,6 +476,8 @@ collect_sse_data(ConnPid, StreamRef, Buffer, Acc) ->
 
 %% @doc Extract complete SSE data lines from buffer.
 %% Returns {ParsedEvents, RemainingBuffer}.
+extract_sse_data(<<>>) ->
+    {[], <<>>};
 extract_sse_data(Buffer) ->
     Lines = binary:split(Buffer, <<"\n">>, [global]),
     %% The last element might be incomplete (no trailing newline)
@@ -516,6 +518,10 @@ collect_sse_events(ConnPid, StreamRef, Buffer, Acc) ->
 
 %% @doc Extract complete SSE events from buffer.
 %% Events are delimited by double newlines. Returns {ParsedEvents, RemainingBuffer}.
+extract_sse_events(<<>>) ->
+    {[], <<>>};
+extract_sse_events(Buffer) when byte_size(Buffer) < 2 ->
+    {[], Buffer};
 extract_sse_events(Buffer) ->
     case binary:split(Buffer, <<"\n\n">>, [global]) of
         [Only] ->

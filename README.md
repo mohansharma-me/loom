@@ -491,7 +491,7 @@ pip3 install mlx-lm>=0.20.0 huggingface-hub psutil
 huggingface-cli download mlx-community/Qwen2.5-0.5B-Instruct-4bit
 
 # 3. Run the suite
-rebar3 ct --suite test/integration/loom_mlx_integration_SUITE
+rebar3 ct --suite integration_test/loom_mlx_integration_SUITE
 ```
 
 If prerequisites are missing, the suite **skips** (not fails) with setup instructions.
