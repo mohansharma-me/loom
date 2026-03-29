@@ -477,6 +477,52 @@ All targets represent maximum acceptable orchestration overhead. The mock adapte
 
 ---
 
+## Integration Tests (Real Hardware)
+
+End-to-end tests that validate the full stack against a real MLX inference engine on Apple Silicon. These are **not** part of CI — they require specific hardware and a downloaded model.
+
+### Setup
+
+```bash
+# 1. Install MLX dependencies (Apple Silicon Mac required)
+pip3 install mlx-lm>=0.20.0 huggingface-hub psutil
+
+# 2. Download test model (~400MB, cached for subsequent runs)
+huggingface-cli download mlx-community/Qwen2.5-0.5B-Instruct-4bit
+
+# 3. Run the suite
+rebar3 ct --suite test/integration/loom_mlx_integration_SUITE
+```
+
+If prerequisites are missing, the suite **skips** (not fails) with setup instructions.
+
+### What's Tested
+
+| Test | What It Validates |
+|------|------------------|
+| `health_endpoint_test` | GET /health returns 200 with engine status `ready` |
+| `memory_metrics_test` | GPU monitor reports sensible memory values matching machine RAM |
+| `chat_completion_openai_test` | POST /v1/chat/completions returns non-empty completion |
+| `chat_completion_anthropic_test` | POST /v1/messages returns non-empty completion in Anthropic format |
+| `sse_streaming_openai_test` | SSE streaming delivers token chunks ending with `[DONE]` |
+| `sse_streaming_anthropic_test` | SSE streaming follows Anthropic event sequence |
+| `gpu_metrics_sanity_test` | GPU metrics have valid types and sensible values |
+| `crash_recovery_test` | SIGKILL adapter, auto-restart, successful post-recovery request |
+
+### Results
+
+Measured on Apple M3 Pro (32GB), Qwen2.5-0.5B-Instruct-4bit, 2026-03-29.
+
+| Metric | Value |
+|--------|-------|
+| Model load time | ~1.6s |
+| Crash recovery (SIGKILL → ready) | ~1.6s |
+| OpenAI streaming | 257 tokens generated |
+| Anthropic streaming | 64 tokens generated |
+| Full suite runtime | ~8s |
+
+---
+
 ## The Name
 
 A loom beam is the roller in a weaving loom that holds the warp threads under tension. Loom holds inference engines under supervision, weaving multiple models, backends, and GPUs into a unified serving fabric — on BEAM.
