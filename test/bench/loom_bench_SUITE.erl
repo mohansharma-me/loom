@@ -198,7 +198,14 @@ init_per_group(port, Config) ->
 init_per_group(Group, Config) when Group =:= coordinator;
                                    Group =:= concurrent;
                                    Group =:= large_messages ->
-    process_flag(trap_exit, true),
+    %% ASSUMPTION: init_per_group runs in a short-lived CT process. When CT
+    %% tears down the group it sends a non-normal exit to that process, which
+    %% propagates via the start_link parent relationship to the coordinator,
+    %% causing it to terminate before the test cases run.
+    %% Fix: spawn a long-lived keeper process as the coordinator parent. The
+    %% keeper calls start_link (becoming the OTP parent) and stays alive until
+    %% end_per_group sends it a stop message. Pattern mirrors port_owner_keeper.
+    Self = self(),
     EngineId = list_to_binary("bench_" ++ atom_to_list(Group)),
     MaxConcurrent = case Group of
         concurrent -> 200;
@@ -215,9 +222,14 @@ init_per_group(Group, Config) when Group =:= coordinator;
         drain_timeout_ms => 5000,
         max_concurrent => MaxConcurrent
     },
-    {ok, Pid} = loom_engine_coordinator:start_link(CoordConfig),
-    wait_coordinator_ready(EngineId, 10000),
-    [{coord_pid, Pid}, {engine_id, EngineId} | Config].
+    Keeper = spawn(fun() -> coord_keeper(Self, CoordConfig, EngineId) end),
+    receive
+        {coord_keeper_ready, Keeper, CoordPid} ->
+            [{coord_pid, CoordPid}, {engine_id, EngineId},
+             {coord_keeper, Keeper} | Config]
+    after 15000 ->
+        ct:fail(coord_keeper_timeout)
+    end.
 
 end_per_group(protocol, _Config) ->
     ok;
@@ -230,8 +242,10 @@ end_per_group(port, Config) ->
     ok;
 end_per_group(_Group, Config) ->
     CoordPid = ?config(coord_pid, Config),
+    Keeper = ?config(coord_keeper, Config),
     loom_engine_coordinator:stop(CoordPid),
     wait_process_dead(CoordPid, 5000),
+    Keeper ! stop,
     ok.
 
 init_per_testcase(_TC, Config) ->
@@ -319,14 +333,35 @@ token_overhead(Config) ->
     store_result(token_overhead, AllSamples).
 
 %%====================================================================
-%% Coordinator group benchmarks (placeholder — implemented in Task 7)
+%% Coordinator group benchmarks
 %%====================================================================
 
-coordinator_ets_read(_Config) ->
-    store_result(coordinator_ets_read, [0]).
+coordinator_ets_read(Config) ->
+    EngineId = ?config(engine_id, Config),
+    Samples = time_iterations(fun() ->
+        _Status = loom_engine_coordinator:get_status(EngineId),
+        _Load = loom_engine_coordinator:get_load(EngineId),
+        _Info = loom_engine_coordinator:get_info(EngineId)
+    end, 10000),
+    store_result(coordinator_ets_read, Samples).
 
-coordinator_generate(_Config) ->
-    store_result(coordinator_generate, [0]).
+coordinator_generate(Config) ->
+    CoordPid = ?config(coord_pid, Config),
+    %% ASSUMPTION: Mock adapter produces 5 tokens per generate request.
+    TokensPerRequest = 5,
+    Samples = lists:map(fun(_) ->
+        T0 = erlang:monotonic_time(microsecond),
+        {ok, ReqId} = loom_engine_coordinator:generate(
+            CoordPid, <<"bench prompt">>, #{max_tokens => 100}),
+        collect_coordinator_tokens(ReqId, TokensPerRequest),
+        receive
+            {loom_done, ReqId, _Stats} ->
+                erlang:monotonic_time(microsecond) - T0
+        after 5000 ->
+            ct:fail(coordinator_done_timeout)
+        end
+    end, lists:seq(1, 500)),
+    store_result(coordinator_generate, Samples).
 
 %%====================================================================
 %% Concurrent group benchmarks (placeholder — implemented in Task 8)
@@ -427,6 +462,31 @@ log_threshold_results(Results) ->
     end, Results),
     ct:pal("Threshold checks: ~B/~B PASS", [Passed, Total]).
 
+%% @doc Long-lived keeper process that owns loom_engine_coordinator across CT
+%% process boundaries.
+%%
+%% CT runs init_per_group, each test case, and end_per_group in separate
+%% processes. gen_statem:start_link records the calling process as the OTP
+%% parent. When CT tears down a group it sends a non-normal exit to the
+%% init_per_group process; that exit propagates via the parent relationship
+%% and kills the coordinator before the test cases run.
+%%
+%% This keeper is spawned with plain spawn/1 (no link) from init_per_group,
+%% becomes the coordinator parent via start_link, and lives until end_per_group
+%% sends it a stop message.
+%%
+%% Protocol:
+%%   stop  — shut down the keeper (coordinator is already stopped by then)
+%%
+%% On startup the caller (init_per_group process) receives:
+%%   {coord_keeper_ready, KeeperPid, CoordPid}
+coord_keeper(Caller, CoordConfig, EngineId) ->
+    process_flag(trap_exit, true),
+    {ok, Pid} = loom_engine_coordinator:start_link(CoordConfig),
+    wait_coordinator_ready(EngineId, 10000),
+    Caller ! {coord_keeper_ready, self(), Pid},
+    receive stop -> ok end.
+
 %% @doc Long-lived keeper process that owns loom_port across CT process boundaries.
 %%
 %% CT runs init_per_group, each test case, and end_per_group in separate OS
@@ -487,6 +547,17 @@ collect_port_token_timestamps(PortRef, Id, N, Acc) ->
             collect_port_token_timestamps(PortRef, Id, N - 1, [T | Acc])
     after 5000 ->
         ct:fail({token_timeout, {remaining, N}})
+    end.
+
+%% @doc Collect N token messages from the coordinator for a given request.
+collect_coordinator_tokens(_ReqId, 0) ->
+    ok;
+collect_coordinator_tokens(ReqId, N) ->
+    receive
+        {loom_token, ReqId, _Text, _Finished} ->
+            collect_coordinator_tokens(ReqId, N - 1)
+    after 5000 ->
+        ct:fail({coordinator_token_timeout, {remaining, N}})
     end.
 
 %% @doc Calculate deltas between consecutive timestamps.
