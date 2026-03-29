@@ -27,6 +27,7 @@
     args => [string()],
     owner => pid(),
     engine_id => binary(),
+    gpus => [non_neg_integer()],
     max_line_length => pos_integer(),
     spawn_timeout_ms => pos_integer(),
     heartbeat_timeout_ms => pos_integer(),
@@ -41,7 +42,8 @@
     send/2,
     shutdown/1,
     get_state/1,
-    get_os_pid/1
+    get_os_pid/1,
+    gpu_env_opts/2
 ]).
 
 %% gen_statem callbacks
@@ -117,18 +119,9 @@ init(Opts) ->
             MaxLineLen = maps:get(max_line_length, Opts, 1048576),
             Ref = make_ref(),
             OwnerMon = erlang:monitor(process, Owner),
-            %% Set CUDA_VISIBLE_DEVICES so the adapter subprocess is
-            %% restricted to the GPUs assigned to this engine.
-            %% ASSUMPTION: gpu_ids are physical CUDA device indices.
-            %% The adapter sees them as device 0..N-1 internally.
-            Gpus = maps:get(gpus, Opts, []),
-            EnvOpts = case Gpus of
-                [] -> [];
-                _ ->
-                    GpuStr = lists:flatten(
-                        lists:join(",", [integer_to_list(G) || G <- Gpus])),
-                    [{env, [{"CUDA_VISIBLE_DEVICES", GpuStr}]}]
-            end,
+            EnvOpts = gpu_env_opts(
+                maps:get(gpus, Opts, []),
+                maps:get(engine_id, Opts, undefined)),
             %% ASSUMPTION: command path is valid and executable. If not,
             %% open_port will throw and the process will crash, which the
             %% supervisor will handle.
@@ -445,3 +438,23 @@ notify_owner(Msg, #data{owner = Owner}) ->
                          notification => Msg}),
             ok
     end.
+
+%% @doc Build open_port env options for GPU assignment.
+%% Sets CUDA_VISIBLE_DEVICES so the adapter subprocess is restricted to the
+%% GPUs assigned to this engine.
+%% ASSUMPTION: gpu_ids are physical CUDA device indices. The adapter sees
+%% them as device 0..N-1 internally. CUDA_VISIBLE_DEVICES only affects
+%% CUDA-based runtimes (NVIDIA). Non-CUDA backends (e.g., MLX on Apple
+%% Silicon) ignore this variable.
+-spec gpu_env_opts([non_neg_integer()], binary() | undefined) -> list().
+gpu_env_opts([], EngineId) ->
+    ?LOG_INFO(#{msg => no_gpu_pinning,
+                engine_id => EngineId,
+                hint => <<"CUDA_VISIBLE_DEVICES not set, adapter uses default GPU">>}),
+    [];
+gpu_env_opts(Gpus, EngineId) ->
+    GpuStr = string:join([integer_to_list(G) || G <- Gpus], ","),
+    ?LOG_INFO(#{msg => gpu_pinning_configured,
+                engine_id => EngineId,
+                cuda_visible_devices => list_to_binary(GpuStr)}),
+    [{env, [{"CUDA_VISIBLE_DEVICES", GpuStr}]}].

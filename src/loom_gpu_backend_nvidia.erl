@@ -26,7 +26,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 -record(state, {
-    gpu_index     :: non_neg_integer(),
+    gpu_id        :: non_neg_integer(),
     nvidia_smi    :: string(),
     poll_timeout  :: pos_integer()
 }).
@@ -44,41 +44,41 @@ detect() ->
 
 -spec init(map()) -> {ok, #state{}} | {error, term()}.
 init(Opts) ->
-    GpuIndex = maps:get(gpu_id, Opts, 0),
+    GpuId = maps:get(gpu_id, Opts, 0),
     NvidiaSmi = maps:get(nvidia_smi_path, Opts, "nvidia-smi"),
     PollTimeout = maps:get(poll_timeout_ms, Opts, 3000),
-    %% ASSUMPTION: Validate GPU index exists by running a test query.
+    %% ASSUMPTION: Validate GPU ID exists by running a test query.
     %% Uses loom_cmd:run_with_timeout/2 to avoid hanging the supervisor
     %% if nvidia-smi is stuck (e.g., during GPU driver reset).
     TestCmd = NvidiaSmi ++ " --query-gpu=name --id=" ++
-              integer_to_list(GpuIndex) ++ " --format=csv,noheader",
+              integer_to_list(GpuId) ++ " --format=csv,noheader",
     case loom_cmd:run_with_timeout(TestCmd, PollTimeout) of
         {ok, Result} ->
             Trimmed = string:trim(Result),
             case Trimmed of
                 "" ->
-                    {error, {gpu_index_not_found, GpuIndex}};
+                    {error, {gpu_id_not_found, GpuId}};
                 _ ->
                     case string:find(Trimmed, "error") of
                         nomatch ->
                             {ok, #state{
-                                gpu_index    = GpuIndex,
+                                gpu_id       = GpuId,
                                 nvidia_smi   = NvidiaSmi,
                                 poll_timeout = PollTimeout
                             }};
                         _ ->
-                            {error, {gpu_index_not_found, GpuIndex}}
+                            {error, {gpu_id_not_found, GpuId}}
                     end
             end;
         {error, timeout} ->
-            ?LOG_ERROR(#{msg => nvidia_smi_init_timeout, gpu_index => GpuIndex}),
-            {error, {nvidia_smi_timeout, GpuIndex}};
+            ?LOG_ERROR(#{msg => nvidia_smi_init_timeout, gpu_id => GpuId}),
+            {error, {nvidia_smi_timeout, GpuId}};
         {error, Reason} ->
             {error, {nvidia_smi_failed, Reason}}
     end.
 
 -spec poll(#state{}) -> {ok, loom_gpu_backend:metrics(), #state{}} | {error, term()}.
-poll(#state{gpu_index = Idx, nvidia_smi = Smi, poll_timeout = Timeout} = State) ->
+poll(#state{gpu_id = Idx, nvidia_smi = Smi, poll_timeout = Timeout} = State) ->
     Cmd = Smi ++ " --query-gpu=utilization.gpu,memory.used,memory.total,"
           "temperature.gpu,power.draw,ecc.errors.corrected.aggregate.total"
           " --id=" ++ integer_to_list(Idx) ++

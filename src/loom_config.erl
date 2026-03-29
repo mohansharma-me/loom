@@ -281,7 +281,15 @@ validate_engine_optional_fields(Engine, Name) ->
     case maps:find(gpu_ids, Engine) of
         {ok, GpuIds} when not is_list(GpuIds) ->
             {error, {validation, {invalid_type, gpu_ids, expected_list}}};
-        _ -> {ok, Name}
+        {ok, GpuIds} ->
+            %% ASSUMPTION: GPU IDs are physical CUDA device indices and must
+            %% be non-negative integers. Negative or non-integer values would
+            %% produce invalid CUDA_VISIBLE_DEVICES strings.
+            case lists:all(fun(G) -> is_integer(G) andalso G >= 0 end, GpuIds) of
+                true -> {ok, Name};
+                false -> {error, {validation, {invalid_gpu_ids, expected_non_neg_integers}}}
+            end;
+        error -> {ok, Name}
     end.
 
 -spec validate_defaults(map()) -> ok | {error, {validation, validation_detail()}}.

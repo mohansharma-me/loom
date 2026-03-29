@@ -275,3 +275,29 @@ collect_messages(Ref, N, Timeout) ->
     after Timeout ->
         error({collect_messages_timeout, N})
     end.
+
+%% --- gpu_env_opts/2 tests ---
+
+gpu_env_opts_empty_test() ->
+    ?assertEqual([], loom_port:gpu_env_opts([], <<"test-engine">>)).
+
+gpu_env_opts_single_gpu_test() ->
+    Result = loom_port:gpu_env_opts([2], <<"test-engine">>),
+    ?assertEqual([{env, [{"CUDA_VISIBLE_DEVICES", "2"}]}], Result).
+
+gpu_env_opts_multiple_gpus_test() ->
+    Result = loom_port:gpu_env_opts([2, 3], <<"test-engine">>),
+    ?assertEqual([{env, [{"CUDA_VISIBLE_DEVICES", "2,3"}]}], Result).
+
+gpu_env_opts_single_zero_test() ->
+    Result = loom_port:gpu_env_opts([0], <<"test-engine">>),
+    ?assertEqual([{env, [{"CUDA_VISIBLE_DEVICES", "0"}]}], Result).
+
+gpu_env_opts_many_gpus_test() ->
+    Result = loom_port:gpu_env_opts([0, 1, 4, 7], <<"test-engine">>),
+    ?assertEqual([{env, [{"CUDA_VISIBLE_DEVICES", "0,1,4,7"}]}], Result).
+
+gpu_env_opts_undefined_engine_id_test() ->
+    %% Should not crash when engine_id is undefined
+    ?assertEqual([], loom_port:gpu_env_opts([], undefined)),
+    ?assertMatch([{env, _}], loom_port:gpu_env_opts([0], undefined)).

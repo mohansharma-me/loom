@@ -847,7 +847,8 @@ build_port_opts(Config) ->
         command   => maps:get(command, Config),
         args      => maps:get(args, Config, []),
         owner     => self(),
-        engine_id => maps:get(engine_id, Config)
+        engine_id => maps:get(engine_id, Config),
+        gpus      => maps:get(gpus, Config, [])
     },
     %% Merge any extra port_opts from the config (e.g., timeouts)
     PortOpts = maps:get(port_opts, Config, #{}),
