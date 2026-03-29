@@ -13,66 +13,72 @@ Loom is an Erlang/OTP application that manages multiple GPU-backed inference eng
 
 ## Quick Start
 
-> **Note:** This reflects the target workflow for Loom v0.1 (Phase 0). See [ROADMAP.md](ROADMAP.md) for current progress.
-
 ### Prerequisites
 
 **Erlang/OTP 27+**
 
 ```bash
 # macOS
-brew install erlang
+brew install erlang rebar3
 
 # Ubuntu / Debian
-sudo apt-get install erlang
-
-# From source or via kerl (https://github.com/kerl/kerl)
-kerl build 27.0 27.0
-kerl install 27.0 ~/erlang/27.0
-source ~/erlang/27.0/activate
+sudo apt-get install erlang rebar3
 ```
 
-**Python 3.10+**
+**Python 3.9+** (included on macOS via Xcode Command Line Tools)
+
+### 1. Clone and Compile
 
 ```bash
-# macOS
-brew install python@3.12
-
-# Ubuntu / Debian
-sudo apt-get install python3 python3-pip python3-venv
-```
-
-**GPU / Inference Engine**
-
-Loom communicates with inference engines over a stdio protocol — it does not interact with GPUs directly. Your hardware and OS requirements depend on which engine you choose:
-
-- **vLLM** — Linux with NVIDIA CUDA, AMD ROCm, or CPU-only mode. See [vLLM installation](https://docs.vllm.ai/en/latest/getting_started/installation/index.html).
-- **TensorRT-LLM** — Linux with NVIDIA GPUs. See [TensorRT-LLM docs](https://nvidia.github.io/TensorRT-LLM/).
-- **MLX** — macOS on Apple Silicon. See [MLX docs](https://ml-explore.github.io/mlx/).
-
-For this guide we'll use vLLM. If you're on a Mac with Apple Silicon, substitute `"backend": "mlx"` in the configuration below.
-
-### 1. Download & Extract Loom
-
-```bash
-curl -LO https://github.com/mohansharma-me/loom/releases/download/v0.1.0/loom-0.1.0-linux-amd64.tar.gz
-tar -xzf loom-0.1.0-linux-amd64.tar.gz
+git clone https://github.com/mohansharma-me/loom.git
 cd loom
+rebar3 compile
 ```
 
-### 2. Configure an Engine
+### 2. Try It (Mock Backend — No GPU)
 
-Edit `config/loom.json` to point Loom at a model. This example uses [Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct), a small open-source model that runs on a single GPU:
+The default config uses a mock backend that works anywhere, no GPU or model download needed:
+
+```bash
+rebar3 shell
+```
+
+The supervision tree starts, the mock adapter loads, and the HTTP server is ready on port 8080. In another terminal:
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# OpenAI-compatible chat completion
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "engine_0", "messages": [{"role": "user", "content": "Hello"}]}'
+
+# Anthropic-compatible messages API
+curl http://localhost:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model": "engine_0", "max_tokens": 64, "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+### 3. Run with a Real Model
+
+Choose your backend based on your hardware. Edit `config/loom.json`:
+
+**MLX — Apple Silicon (macOS M1/M2/M3/M4)**
+
+```bash
+pip3 install mlx-lm>=0.20.0 huggingface-hub psutil
+huggingface-cli download mlx-community/Qwen2.5-0.5B-Instruct-4bit
+```
 
 ```json
 {
   "engines": [
     {
-      "name": "qwen2.5-1.5b",
-      "backend": "vllm",
-      "model": "Qwen/Qwen2.5-1.5B-Instruct",
-      "gpu_ids": [0],
-      "tp_size": 1
+      "name": "qwen",
+      "backend": "mlx",
+      "model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+      "gpu_ids": [0]
     }
   ],
   "server": {
@@ -81,91 +87,85 @@ Edit `config/loom.json` to point Loom at a model. This example uses [Qwen2.5-1.5
 }
 ```
 
-Until Loom integrates with HuggingFace directly, you'll need to download the model yourself:
+**vLLM — Linux with NVIDIA/AMD/CPU**
 
 ```bash
-pip install huggingface_hub
+pip install "vllm>=0.6.0,<0.7.0"
 huggingface-cli download Qwen/Qwen2.5-1.5B-Instruct
 ```
 
-### 3. Start Loom
-
-```bash
-./bin/loom foreground
+```json
+{
+  "engines": [
+    {
+      "name": "qwen",
+      "backend": "vllm",
+      "model": "Qwen/Qwen2.5-1.5B-Instruct",
+      "gpu_ids": [0]
+    }
+  ],
+  "server": {
+    "port": 8080
+  }
+}
 ```
 
-You should see the supervision tree start, the Python adapter launch vLLM, and the model load into GPU memory. Once you see `engine "qwen2.5-1.5b" ready`, Loom is serving.
-
-### 4. Send a Request
-
-Loom exposes both OpenAI-compatible (`/v1/chat/completions`) and Anthropic-compatible (`/v1/messages`) APIs. Use any OpenAI or Anthropic SDK client, or plain `curl`:
+Then start Loom:
 
 ```bash
+rebar3 shell
+```
+
+The model loads (1-2s on MLX, longer on vLLM depending on model size). Once you see `model loaded successfully` in the log output, the engine is ready:
+
+```bash
+# Streaming chat completion
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen2.5-1.5b",
-    "messages": [
-      {"role": "user", "content": "Explain the BEAM virtual machine in one paragraph."}
-    ],
+    "model": "qwen",
+    "messages": [{"role": "user", "content": "Explain the BEAM virtual machine in one paragraph."}],
     "stream": true
   }'
 ```
 
 Tokens stream back as Server-Sent Events. Each inference request runs as its own Erlang process — independent lifecycle, independent failure.
 
-### 5. Test Fault Tolerance
+### 4. Test Fault Tolerance
 
-This is where Loom's value shows. Kill the inference engine and watch the supervisor recover it:
-
-```bash
-# Find and kill the vLLM process
-kill $(pgrep -f "loom_adapter")
-
-# In the Loom console you'll see:
-#   engine "qwen2.5-1.5b" crashed (exit_status 137)
-#   supervisor restarting engine "qwen2.5-1.5b"
-#   engine "qwen2.5-1.5b" ready
-#
-# In-flight requests on this engine get {error, engine_crashed}.
-# If other engines are configured, they continue serving uninterrupted.
-```
-
-Recovery is automatic. The supervisor detects the crash in milliseconds via Port monitoring, restarts the engine process, and the model reloads into GPU memory. No manual intervention, no system restart.
-
-### 6. Multi-Model Setup
-
-Loom's real power is orchestrating multiple models. Add a second engine to serve a different model on a separate GPU:
-
-```json
-{
-  "engines": [
-    {
-      "name": "qwen2.5-1.5b",
-      "backend": "vllm",
-      "model": "Qwen/Qwen2.5-1.5B-Instruct",
-      "gpu_ids": [0],
-      "tp_size": 1
-    },
-    {
-      "name": "tinyllama-1.1b",
-      "backend": "vllm",
-      "model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-      "gpu_ids": [1],
-      "tp_size": 1
-    }
-  ]
-}
-```
-
-Now requests specify which model to use via the `"model"` field. The router directs each request to the correct engine. If one engine crashes, the other keeps serving. Each engine is an independent subtree in the OTP supervision hierarchy — isolated failure, isolated recovery.
+Kill the inference engine and watch the supervisor recover it:
 
 ```bash
-# Hits the TinyLlama engine on GPU 1
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "tinyllama-1.1b", "messages": [{"role": "user", "content": "Hello!"}]}'
+# Kill the adapter process
+kill -9 $(pgrep -f "loom_adapter")
+
+# Loom detects the crash in milliseconds, restarts the engine,
+# and reloads the model. Recovery takes ~1.5s on MLX.
+# In-flight requests get {error, engine_crashed}.
+# Send another request to verify recovery:
+curl http://localhost:8080/health
 ```
+
+Recovery is automatic. The supervisor detects the crash via Port monitoring, restarts the engine process, and the model reloads. No manual intervention, no system restart.
+
+### 5. Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Engine status, load |
+| `/v1/chat/completions` | POST | OpenAI-compatible chat (streaming and non-streaming) |
+| `/v1/messages` | POST | Anthropic-compatible messages (streaming and non-streaming) |
+| `/v1/models` | GET | List available models |
+
+### 6. Supported Backends
+
+| Backend | Platform | Install | Config `"backend"` |
+|---------|----------|---------|-------------------|
+| **MLX** | macOS Apple Silicon | `pip3 install mlx-lm>=0.20.0 psutil` | `"mlx"` |
+| **vLLM** | Linux (NVIDIA/AMD/CPU) | `pip install "vllm>=0.6.0,<0.7.0"` | `"vllm"` |
+| **Mock** | Any (testing) | None | `"mock"` |
+
+Loom communicates with all backends over the same stdio JSON protocol — the Erlang side is completely agnostic to which engine is running.
 
 ---
 
