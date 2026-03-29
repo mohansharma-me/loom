@@ -46,7 +46,7 @@ Standards and practices that apply across all phases.
 
 ### Validation
 - [x] Crash recovery test: kill engine → auto-restart → system recovers — [#13](https://github.com/mohansharma-me/loom/issues/13) `P0-12`
-- [ ] Port overhead benchmark (target: <1ms per message) — [#14](https://github.com/mohansharma-me/loom/issues/14) `P0-13`
+- [x] Port overhead benchmark (target: <1ms per message) — [#14](https://github.com/mohansharma-me/loom/issues/14) `P0-13`
 - [ ] Integration test suite for real vLLM on GPU hardware — [#15](https://github.com/mohansharma-me/loom/issues/15) `P0-14`
 - [ ] Phase 0 architecture docs and demo script — [#16](https://github.com/mohansharma-me/loom/issues/16) `P0-15`
 
@@ -136,13 +136,13 @@ Standards and practices that apply across all phases.
 | Phase | Total | Done | In Progress | Pending |
 |-------|-------|------|-------------|---------|
 | Cross-Cutting | 4 | 4 | 0 | 0 |
-| Phase 0 | 18 | 15 | 0 | 3 |
+| Phase 0 | 18 | 16 | 0 | 2 |
 | Phase 1 | 11 | 0 | 0 | 11 |
 | Phase 2 | 5 | 0 | 0 | 5 |
 | Phase 3 | 5 | 0 | 0 | 5 |
 | Phase 4 | 6 | 0 | 0 | 6 |
 | Phase 5 | 5 | 0 | 0 | 5 |
-| **Total** | **54** | **19** | **0** | **35** |
+| **Total** | **54** | **20** | **0** | **34** |
 
 ## What's Next
 
@@ -160,3 +160,4 @@ Phase 0 bootstrapping is the immediate priority. The recommended start sequence:
 10. ~~**#11 — P0-10:** HTTP API with SSE streaming (Cowboy)~~ ✓
 11. ~~**#65 — CC-04:** JSON configuration parsing module (`loom_config`)~~ ✓
 12. ~~**#12 — P0-11:** Wire all components into application supervisor tree~~ ✓
+13. ~~**#14 — P0-13:** Port overhead benchmark~~ ✓

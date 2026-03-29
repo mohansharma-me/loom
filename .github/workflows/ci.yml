@@ -115,6 +115,40 @@ jobs:
       - name: Xref
         run: rebar3 xref
 
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Erlang/OTP
+        uses: erlef/setup-beam@ee09b1e59bb240681c382eb1f0abc6a04af72764  # v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+
+      - name: Restore cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: ${{ runner.os }}-otp${{ env.OTP_VERSION }}-${{ hashFiles('rebar.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-otp${{ env.OTP_VERSION }}-
+
+      - name: Run benchmarks
+        run: rebar3 ct --dir test/bench --suite loom_bench_SUITE
+
+      - name: Upload results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bench-results
+          path: _build/bench/results.json
+          if-no-files-found: warn
+        if: always()
+
   docker:
     name: Docker
     runs-on: ubuntu-24.04
