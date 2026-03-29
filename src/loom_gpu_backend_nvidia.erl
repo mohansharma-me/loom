@@ -44,7 +44,7 @@ detect() ->
 
 -spec init(map()) -> {ok, #state{}} | {error, term()}.
 init(Opts) ->
-    GpuIndex = maps:get(gpu_index, Opts, 0),
+    GpuIndex = maps:get(gpu_id, Opts, 0),
     NvidiaSmi = maps:get(nvidia_smi_path, Opts, "nvidia-smi"),
     PollTimeout = maps:get(poll_timeout_ms, Opts, 3000),
     %% ASSUMPTION: Validate GPU index exists by running a test query.

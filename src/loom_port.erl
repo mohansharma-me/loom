@@ -117,6 +117,18 @@ init(Opts) ->
             MaxLineLen = maps:get(max_line_length, Opts, 1048576),
             Ref = make_ref(),
             OwnerMon = erlang:monitor(process, Owner),
+            %% Set CUDA_VISIBLE_DEVICES so the adapter subprocess is
+            %% restricted to the GPUs assigned to this engine.
+            %% ASSUMPTION: gpu_ids are physical CUDA device indices.
+            %% The adapter sees them as device 0..N-1 internally.
+            Gpus = maps:get(gpus, Opts, []),
+            EnvOpts = case Gpus of
+                [] -> [];
+                _ ->
+                    GpuStr = lists:flatten(
+                        lists:join(",", [integer_to_list(G) || G <- Gpus])),
+                    [{env, [{"CUDA_VISIBLE_DEVICES", GpuStr}]}]
+            end,
             %% ASSUMPTION: command path is valid and executable. If not,
             %% open_port will throw and the process will crash, which the
             %% supervisor will handle.
@@ -126,7 +138,7 @@ init(Opts) ->
                 binary,
                 exit_status,
                 use_stdio
-            ]),
+            ] ++ EnvOpts),
             OsPid = case erlang:port_info(Port, os_pid) of
                 {os_pid, P} -> P;
                 undefined -> undefined

@@ -241,7 +241,8 @@ build_coordinator_config(Config) ->
         command => maps:get(adapter_cmd, Config),
         args => maps:get(adapter_args, Config, []),
         model => maps:get(model, Config, <<>>),
-        backend => maps:get(backend, Config, <<>>)
+        backend => maps:get(backend, Config, <<>>),
+        gpus => maps:get(gpus, Config, [])
     },
     %% Forward optional coordinator-specific keys
     OptionalKeys = [startup_timeout_ms, drain_timeout_ms, max_concurrent, port_opts],
