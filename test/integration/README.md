@@ -6,7 +6,7 @@ and model downloads.
 
 ## MLX Integration Suite (Apple Silicon)
 
-Tests the full Loom stack with a real MLX inference engine using TinyLlama-1.1B.
+Tests the full Loom stack with a real MLX inference engine using Qwen2.5-0.5B.
 
 ### Prerequisites
 
@@ -20,9 +20,9 @@ Tests the full Loom stack with a real MLX inference engine using TinyLlama-1.1B.
    ```bash
    pip install mlx-lm>=0.20.0 huggingface-hub psutil
    ```
-5. **Download test model** (~700MB, cached for subsequent runs)
+5. **Download test model** (~400MB, cached for subsequent runs)
    ```bash
-   huggingface-cli download mlx-community/TinyLlama-1.1B-Chat-v1.0-4bit
+   huggingface-cli download mlx-community/Qwen2.5-0.5B-Instruct-4bit
    ```
 
 ### Running
