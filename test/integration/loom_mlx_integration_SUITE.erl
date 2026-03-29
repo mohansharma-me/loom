@@ -15,7 +15,8 @@
 -include_lib("stdlib/include/assert.hrl").
 
 %% CT callbacks
--export([all/0, init_per_suite/1, end_per_suite/1]).
+-export([all/0, groups/0, init_per_suite/1, end_per_suite/1]).
+-export([init_per_testcase/2, end_per_testcase/2]).
 
 %% Test cases
 -export([
@@ -35,15 +36,18 @@
 -define(ENGINE_READY_TIMEOUT, 120000).
 -define(REQUEST_TIMEOUT, 60000).
 
-all() ->
-    [health_endpoint_test,
-     memory_metrics_test,
-     chat_completion_openai_test,
-     chat_completion_anthropic_test,
-     sse_streaming_openai_test,
-     sse_streaming_anthropic_test,
-     gpu_metrics_sanity_test,
-     crash_recovery_test].
+all() -> [{group, default}].
+
+groups() ->
+    [{default, [sequence],
+      [health_endpoint_test,
+       memory_metrics_test,
+       chat_completion_openai_test,
+       chat_completion_anthropic_test,
+       sse_streaming_openai_test,
+       sse_streaming_anthropic_test,
+       gpu_metrics_sanity_test,
+       crash_recovery_test]}].
 
 %%====================================================================
 %% CT Callbacks
@@ -58,12 +62,20 @@ init_per_suite(Config) ->
     end.
 
 end_per_suite(Config) ->
-    loom_test_helpers:stop_app(),
-    catch application:stop(gun),
     case ?config(config_path, Config) of
-        undefined -> ok;
-        Path -> file:delete(Path)
+        undefined ->
+            ok;
+        Path ->
+            loom_test_helpers:stop_app(),
+            catch application:stop(gun),
+            file:delete(Path)
     end,
+    ok.
+
+init_per_testcase(_TC, Config) ->
+    Config.
+
+end_per_testcase(_TC, _Config) ->
     ok.
 
 %%====================================================================
@@ -421,52 +433,94 @@ wait_engine_ready(EngineId, Timeout) ->
 %%====================================================================
 
 %% @doc Collect SSE data lines from a Gun streaming response.
+%% Buffers across chunk boundaries to handle TCP fragmentation.
 collect_sse_data(ConnPid, StreamRef, Acc) ->
+    collect_sse_data(ConnPid, StreamRef, <<>>, Acc).
+
+collect_sse_data(ConnPid, StreamRef, Buffer, Acc) ->
     case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
         {data, nofin, Chunk} ->
-            Events = parse_sse_data(Chunk),
-            collect_sse_data(ConnPid, StreamRef, Acc ++ Events);
+            Combined = <<Buffer/binary, Chunk/binary>>,
+            {Events, NewBuffer} = extract_sse_data(Combined),
+            collect_sse_data(ConnPid, StreamRef, NewBuffer, Acc ++ Events);
         {data, fin, Chunk} ->
-            Events = parse_sse_data(Chunk),
+            Combined = <<Buffer/binary, Chunk/binary>>,
+            {Events, _} = extract_sse_data(Combined),
             Acc ++ Events;
-        {error, _} ->
+        {error, Reason} ->
+            ct:pal("WARNING: SSE collection ended with error: ~p", [Reason]),
             Acc
     end.
 
-parse_sse_data(Chunk) ->
-    Lines = binary:split(Chunk, <<"\n">>, [global, trim_all]),
-    lists:filtermap(fun(Line) ->
+%% @doc Extract complete SSE data lines from buffer.
+%% Returns {ParsedEvents, RemainingBuffer}.
+extract_sse_data(Buffer) ->
+    Lines = binary:split(Buffer, <<"\n">>, [global]),
+    %% The last element might be incomplete (no trailing newline)
+    {CompleteLines, Remainder} = case binary:last(Buffer) of
+        $\n -> {Lines, <<>>};
+        _ ->
+            Complete = lists:droplast(Lines),
+            [Partial] = lists:nthtail(length(Lines) - 1, Lines),
+            {Complete, Partial}
+    end,
+    Events = lists:filtermap(fun(Line) ->
         case Line of
             <<"data: ", Data/binary>> -> {true, Data};
             _ -> false
         end
-    end, Lines).
+    end, CompleteLines),
+    {Events, Remainder}.
 
 %% @doc Collect SSE events with event type from a Gun streaming response.
+%% Buffers across chunk boundaries to handle TCP fragmentation.
 collect_sse_events(ConnPid, StreamRef, Acc) ->
+    collect_sse_events(ConnPid, StreamRef, <<>>, Acc).
+
+collect_sse_events(ConnPid, StreamRef, Buffer, Acc) ->
     case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
         {data, nofin, Chunk} ->
-            Events = parse_sse_events(Chunk),
-            collect_sse_events(ConnPid, StreamRef, Acc ++ Events);
+            Combined = <<Buffer/binary, Chunk/binary>>,
+            {Events, NewBuffer} = extract_sse_events(Combined),
+            collect_sse_events(ConnPid, StreamRef, NewBuffer, Acc ++ Events);
         {data, fin, Chunk} ->
-            Events = parse_sse_events(Chunk),
+            Combined = <<Buffer/binary, Chunk/binary>>,
+            {Events, _} = extract_sse_events(Combined),
             Acc ++ Events;
-        {error, _} ->
+        {error, Reason} ->
+            ct:pal("WARNING: SSE collection ended with error: ~p", [Reason]),
             Acc
     end.
 
-parse_sse_events(Chunk) ->
-    Blocks = binary:split(Chunk, <<"\n\n">>, [global, trim_all]),
-    lists:filtermap(fun(Block) ->
-        Lines = binary:split(Block, <<"\n">>, [global]),
-        EventType = find_sse_field(<<"event: ">>, Lines),
-        Data = find_sse_field(<<"data: ">>, Lines),
-        case {EventType, Data} of
-            {undefined, undefined} -> false;
-            {undefined, D} -> {true, {<<"data">>, D}};
-            {E, D} -> {true, {E, D}}
-        end
-    end, Blocks).
+%% @doc Extract complete SSE events from buffer.
+%% Events are delimited by double newlines. Returns {ParsedEvents, RemainingBuffer}.
+extract_sse_events(Buffer) ->
+    case binary:split(Buffer, <<"\n\n">>, [global]) of
+        [Only] ->
+            %% No complete event yet
+            {[], Only};
+        Parts ->
+            %% Last part is either empty (buffer ended with \n\n) or incomplete
+            {CompleteBlocks, Remainder} = case binary:match(Buffer, <<"\n\n">>, [{scope, {byte_size(Buffer) - 2, 2}}]) of
+                {_, _} ->
+                    %% Buffer ends with \n\n — all parts are complete, last is empty
+                    {[P || P <- Parts, P =/= <<>>], <<>>};
+                nomatch ->
+                    %% Last part is incomplete
+                    {lists:droplast(Parts), lists:last(Parts)}
+            end,
+            Events = lists:filtermap(fun(Block) ->
+                Lines = binary:split(Block, <<"\n">>, [global]),
+                EventType = find_sse_field(<<"event: ">>, Lines),
+                Data = find_sse_field(<<"data: ">>, Lines),
+                case {EventType, Data} of
+                    {undefined, undefined} -> false;
+                    {undefined, D} -> {true, {<<"data">>, D}};
+                    {E, D} -> {true, {E, D}}
+                end
+            end, CompleteBlocks),
+            {Events, Remainder}
+    end.
 
 find_sse_field(Prefix, Lines) ->
     PLen = byte_size(Prefix),
@@ -538,4 +592,5 @@ wait_status_not(EngineId, Status, Timeout) when Timeout > 0 ->
             ok
     end;
 wait_status_not(_EngineId, _Status, _Timeout) ->
+    ct:pal("WARNING: wait_status_not timed out - recovery may have been instant"),
     ok.
