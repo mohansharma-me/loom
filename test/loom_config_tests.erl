@@ -264,6 +264,36 @@ validate_invalid_gpu_ids_test() ->
     file:delete(Path),
     cleanup_ets().
 
+validate_gpu_ids_negative_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\", \"model\": \"m\", \"gpu_ids\": [-1]}]}">>),
+    ?assertMatch({error, {validation, {invalid_gpu_ids, expected_non_neg_integers}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_gpu_ids_non_integer_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\", \"model\": \"m\", \"gpu_ids\": [0.5]}]}">>),
+    ?assertMatch({error, {validation, {invalid_gpu_ids, expected_non_neg_integers}}},
+                 loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_gpu_ids_valid_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\", \"model\": \"m\", \"gpu_ids\": [0, 1, 2]}]}">>),
+    ?assertEqual(ok, loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
+validate_gpu_ids_empty_list_test() ->
+    cleanup_ets(),
+    Path = write_temp_file(<<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\", \"model\": \"m\", \"gpu_ids\": []}]}">>),
+    ?assertEqual(ok, loom_config:load(Path)),
+    file:delete(Path),
+    cleanup_ets().
+
 validate_invalid_timeout_type_test() ->
     cleanup_ets(),
     Json = <<"{\"engines\": [{\"name\": \"e\", \"backend\": \"mock\", \"model\": \"m\"}], \"defaults\": {\"coordinator\": {\"max_concurrent\": \"not_int\"}}}">>,
