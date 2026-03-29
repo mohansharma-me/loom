@@ -67,17 +67,231 @@ end_per_suite(Config) ->
     ok.
 
 %%====================================================================
-%% Test Cases (stubs — replaced in subsequent tasks)
+%% Test Cases
 %%====================================================================
 
-health_endpoint_test(_Config) -> ok.
-memory_metrics_test(_Config) -> ok.
-chat_completion_openai_test(_Config) -> ok.
-chat_completion_anthropic_test(_Config) -> ok.
-sse_streaming_openai_test(_Config) -> ok.
-sse_streaming_anthropic_test(_Config) -> ok.
-gpu_metrics_sanity_test(_Config) -> ok.
-crash_recovery_test(_Config) -> ok.
+health_endpoint_test(Config) ->
+    Port = ?config(http_port, Config),
+    {ok, ConnPid} = gun:open("127.0.0.1", Port),
+    {ok, _} = gun:await_up(ConnPid),
+    StreamRef = gun:get(ConnPid, "/health"),
+    {response, nofin, 200, _Headers} = gun:await(ConnPid, StreamRef),
+    {ok, Body} = gun:await_body(ConnPid, StreamRef),
+    Decoded = loom_json:decode(Body),
+    ?assertEqual(<<"ready">>, maps:get(<<"status">>, Decoded)),
+    ?assertEqual(?ENGINE_ID, maps:get(<<"engine_id">>, Decoded)),
+    Load = maps:get(<<"load">>, Decoded),
+    ?assert(is_integer(Load)),
+    ?assert(Load >= 0),
+    gun:close(ConnPid).
+
+memory_metrics_test(Config) ->
+    EngineId = ?config(engine_id, Config),
+    MonitorPid = find_gpu_monitor(EngineId),
+    {ok, Metrics} = loom_gpu_monitor:force_poll(MonitorPid),
+    MemTotalGb = maps:get(mem_total_gb, Metrics),
+    MemUsedGb = maps:get(mem_used_gb, Metrics),
+    MachineRamGb = get_machine_ram_gb(),
+    ?assert(abs(MemTotalGb - MachineRamGb) < 0.5),
+    ?assert(MemUsedGb > 0),
+    ?assert(MemUsedGb < MemTotalGb),
+    ct:pal("Memory: ~.1f/~.1f GB used (machine: ~.1f GB)",
+           [MemUsedGb, MemTotalGb, MachineRamGb]).
+
+chat_completion_openai_test(Config) ->
+    Port = ?config(http_port, Config),
+    {ok, ConnPid} = gun:open("127.0.0.1", Port),
+    {ok, _} = gun:await_up(ConnPid),
+    Body = loom_json:encode(#{
+        <<"model">> => ?MODEL,
+        <<"messages">> => [#{<<"role">> => <<"user">>,
+                             <<"content">> => <<"Say hello in one sentence.">>}],
+        <<"stream">> => false
+    }),
+    StreamRef = gun:post(ConnPid, "/v1/chat/completions",
+        [{<<"content-type">>, <<"application/json">>}], Body),
+    {response, nofin, 200, _Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    {ok, RespBody} = gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    Decoded = loom_json:decode(RespBody),
+    ?assertEqual(<<"chat.completion">>, maps:get(<<"object">>, Decoded)),
+    [Choice] = maps:get(<<"choices">>, Decoded),
+    Msg = maps:get(<<"message">>, Choice),
+    ?assertEqual(<<"assistant">>, maps:get(<<"role">>, Msg)),
+    Content = maps:get(<<"content">>, Msg),
+    ?assert(is_binary(Content)),
+    ?assert(byte_size(Content) > 0),
+    Usage = maps:get(<<"usage">>, Decoded),
+    ?assert(maps:get(<<"prompt_tokens">>, Usage) > 0),
+    ?assert(maps:get(<<"completion_tokens">>, Usage) > 0),
+    ct:pal("OpenAI response (~B tokens): ~s",
+           [maps:get(<<"completion_tokens">>, Usage), Content]),
+    gun:close(ConnPid).
+
+chat_completion_anthropic_test(Config) ->
+    Port = ?config(http_port, Config),
+    {ok, ConnPid} = gun:open("127.0.0.1", Port),
+    {ok, _} = gun:await_up(ConnPid),
+    Body = loom_json:encode(#{
+        <<"model">> => ?MODEL,
+        <<"max_tokens">> => 64,
+        <<"messages">> => [#{<<"role">> => <<"user">>,
+                             <<"content">> => <<"Say hello in one sentence.">>}]
+    }),
+    StreamRef = gun:post(ConnPid, "/v1/messages",
+        [{<<"content-type">>, <<"application/json">>}], Body),
+    {response, nofin, 200, _Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    {ok, RespBody} = gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    Decoded = loom_json:decode(RespBody),
+    ?assertEqual(<<"message">>, maps:get(<<"type">>, Decoded)),
+    ?assertEqual(<<"assistant">>, maps:get(<<"role">>, Decoded)),
+    [ContentBlock] = maps:get(<<"content">>, Decoded),
+    ?assertEqual(<<"text">>, maps:get(<<"type">>, ContentBlock)),
+    Text = maps:get(<<"text">>, ContentBlock),
+    ?assert(is_binary(Text)),
+    ?assert(byte_size(Text) > 0),
+    ?assertEqual(<<"end_turn">>, maps:get(<<"stop_reason">>, Decoded)),
+    Usage = maps:get(<<"usage">>, Decoded),
+    ?assert(maps:get(<<"input_tokens">>, Usage) > 0),
+    ?assert(maps:get(<<"output_tokens">>, Usage) > 0),
+    ct:pal("Anthropic response (~B tokens): ~s",
+           [maps:get(<<"output_tokens">>, Usage), Text]),
+    gun:close(ConnPid).
+
+sse_streaming_openai_test(Config) ->
+    Port = ?config(http_port, Config),
+    {ok, ConnPid} = gun:open("127.0.0.1", Port),
+    {ok, _} = gun:await_up(ConnPid),
+    Body = loom_json:encode(#{
+        <<"model">> => ?MODEL,
+        <<"messages">> => [#{<<"role">> => <<"user">>,
+                             <<"content">> => <<"Say hello in one sentence.">>}],
+        <<"stream">> => true
+    }),
+    StreamRef = gun:post(ConnPid, "/v1/chat/completions",
+        [{<<"content-type">>, <<"application/json">>}], Body),
+    {response, nofin, 200, Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    ContentType = proplists:get_value(<<"content-type">>, Headers),
+    ?assertMatch(<<"text/event-stream", _/binary>>, ContentType),
+    Events = collect_sse_data(ConnPid, StreamRef, []),
+    ?assert(length(Events) >= 3),
+    ?assertEqual(<<"[DONE]">>, lists:last(Events)),
+    JsonEvents = lists:droplast(Events),
+    ?assert(length(JsonEvents) >= 2),
+    lists:foreach(fun(DataBin) ->
+        Chunk = loom_json:decode(DataBin),
+        [Choice] = maps:get(<<"choices">>, Chunk),
+        _Delta = maps:get(<<"delta">>, Choice)
+    end, JsonEvents),
+    LastJson = loom_json:decode(lists:last(JsonEvents)),
+    [LastChoice] = maps:get(<<"choices">>, LastJson),
+    ?assertEqual(<<"stop">>, maps:get(<<"finish_reason">>, LastChoice)),
+    Tokens = lists:filtermap(fun(DataBin) ->
+        Chunk = loom_json:decode(DataBin),
+        [Choice] = maps:get(<<"choices">>, Chunk),
+        Delta = maps:get(<<"delta">>, Choice),
+        case maps:find(<<"content">>, Delta) of
+            {ok, C} when is_binary(C), byte_size(C) > 0 -> {true, C};
+            _ -> false
+        end
+    end, JsonEvents),
+    FullContent = iolist_to_binary(Tokens),
+    ?assert(byte_size(FullContent) > 0),
+    ct:pal("OpenAI streaming: ~B chunks, content: ~s",
+           [length(JsonEvents), FullContent]),
+    gun:close(ConnPid).
+
+sse_streaming_anthropic_test(Config) ->
+    Port = ?config(http_port, Config),
+    {ok, ConnPid} = gun:open("127.0.0.1", Port),
+    {ok, _} = gun:await_up(ConnPid),
+    Body = loom_json:encode(#{
+        <<"model">> => ?MODEL,
+        <<"max_tokens">> => 64,
+        <<"messages">> => [#{<<"role">> => <<"user">>,
+                             <<"content">> => <<"Say hello in one sentence.">>}],
+        <<"stream">> => true
+    }),
+    StreamRef = gun:post(ConnPid, "/v1/messages",
+        [{<<"content-type">>, <<"application/json">>}], Body),
+    {response, nofin, 200, Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    ContentType = proplists:get_value(<<"content-type">>, Headers),
+    ?assertMatch(<<"text/event-stream", _/binary>>, ContentType),
+    Events = collect_sse_events(ConnPid, StreamRef, []),
+    EventTypes = [Type || {Type, _} <- Events],
+    ?assertEqual(<<"message_start">>, hd(EventTypes)),
+    ?assertEqual(<<"content_block_start">>, lists:nth(2, EventTypes)),
+    ?assertEqual(<<"message_stop">>, lists:last(EventTypes)),
+    ?assert(lists:member(<<"message_delta">>, EventTypes)),
+    ?assert(lists:member(<<"content_block_stop">>, EventTypes)),
+    DeltaCount = length([T || T <- EventTypes, T =:= <<"content_block_delta">>]),
+    ?assert(DeltaCount >= 2),
+    DeltaTexts = lists:filtermap(fun
+        ({<<"content_block_delta">>, DataBin}) ->
+            Data = loom_json:decode(DataBin),
+            Delta = maps:get(<<"delta">>, Data),
+            case maps:find(<<"text">>, Delta) of
+                {ok, T} when is_binary(T) -> {true, T};
+                _ -> false
+            end;
+        (_) -> false
+    end, Events),
+    FullText = iolist_to_binary(DeltaTexts),
+    ?assert(byte_size(FullText) > 0),
+    ct:pal("Anthropic streaming: ~B deltas, content: ~s",
+           [DeltaCount, FullText]),
+    gun:close(ConnPid).
+
+gpu_metrics_sanity_test(Config) ->
+    EngineId = ?config(engine_id, Config),
+    MonitorPid = find_gpu_monitor(EngineId),
+    {ok, Metrics} = loom_gpu_monitor:force_poll(MonitorPid),
+    MemTotalGb = maps:get(mem_total_gb, Metrics),
+    MachineRamGb = get_machine_ram_gb(),
+    ?assert(abs(MemTotalGb - MachineRamGb) < 0.5),
+    MemUsedGb = maps:get(mem_used_gb, Metrics),
+    ?assert(MemUsedGb > 0),
+    ?assert(MemUsedGb < MemTotalGb),
+    GpuUtil = maps:get(gpu_util, Metrics),
+    ?assert(is_float(GpuUtil) orelse is_integer(GpuUtil)),
+    Timestamp = maps:get(timestamp, Metrics),
+    Now = erlang:system_time(millisecond),
+    ?assert(Now - Timestamp < 30000),
+    ct:pal("GPU metrics: util=~.1f%, mem=~.1f/~.1f GB, age=~Bms",
+           [GpuUtil, MemUsedGb, MemTotalGb, Now - Timestamp]).
+
+crash_recovery_test(Config) ->
+    EngineId = ?config(engine_id, Config),
+    Port = ?config(http_port, Config),
+    ?assertEqual(ready, loom_engine_coordinator:get_status(EngineId)),
+    CoordPid = find_coordinator(EngineId),
+    OsPid = get_adapter_os_pid(CoordPid, EngineId),
+    ct:pal("Killing MLX adapter OS process: ~B", [OsPid]),
+    T0 = erlang:monotonic_time(millisecond),
+    os:cmd("kill -9 " ++ integer_to_list(OsPid)),
+    ok = wait_status_not(EngineId, ready, 10000),
+    ct:pal("Engine left ready state"),
+    ok = wait_engine_ready(EngineId, ?ENGINE_READY_TIMEOUT),
+    T1 = erlang:monotonic_time(millisecond),
+    ct:pal("Engine recovered to ready in ~Bms", [T1 - T0]),
+    {ok, ConnPid} = gun:open("127.0.0.1", Port),
+    {ok, _} = gun:await_up(ConnPid),
+    Body = loom_json:encode(#{
+        <<"model">> => ?MODEL,
+        <<"messages">> => [#{<<"role">> => <<"user">>,
+                             <<"content">> => <<"Say hello.">>}],
+        <<"stream">> => false
+    }),
+    StreamRef = gun:post(ConnPid, "/v1/chat/completions",
+        [{<<"content-type">>, <<"application/json">>}], Body),
+    {response, nofin, 200, _Headers} = gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    {ok, RespBody} = gun:await_body(ConnPid, StreamRef, ?REQUEST_TIMEOUT),
+    Decoded = loom_json:decode(RespBody),
+    [Choice] = maps:get(<<"choices">>, Decoded),
+    Msg = maps:get(<<"message">>, Choice),
+    Content = maps:get(<<"content">>, Msg),
+    ?assert(byte_size(Content) > 0),
+    ct:pal("Post-recovery response: ~s", [Content]),
+    gun:close(ConnPid).
 
 %%====================================================================
 %% Prerequisites
@@ -201,3 +415,127 @@ wait_engine_ready(EngineId, Timeout) ->
         end,
         ready,
         Timeout).
+
+%%====================================================================
+%% SSE Helpers
+%%====================================================================
+
+%% @doc Collect SSE data lines from a Gun streaming response.
+collect_sse_data(ConnPid, StreamRef, Acc) ->
+    case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+        {data, nofin, Chunk} ->
+            Events = parse_sse_data(Chunk),
+            collect_sse_data(ConnPid, StreamRef, Acc ++ Events);
+        {data, fin, Chunk} ->
+            Events = parse_sse_data(Chunk),
+            Acc ++ Events;
+        {error, _} ->
+            Acc
+    end.
+
+parse_sse_data(Chunk) ->
+    Lines = binary:split(Chunk, <<"\n">>, [global, trim_all]),
+    lists:filtermap(fun(Line) ->
+        case Line of
+            <<"data: ", Data/binary>> -> {true, Data};
+            _ -> false
+        end
+    end, Lines).
+
+%% @doc Collect SSE events with event type from a Gun streaming response.
+collect_sse_events(ConnPid, StreamRef, Acc) ->
+    case gun:await(ConnPid, StreamRef, ?REQUEST_TIMEOUT) of
+        {data, nofin, Chunk} ->
+            Events = parse_sse_events(Chunk),
+            collect_sse_events(ConnPid, StreamRef, Acc ++ Events);
+        {data, fin, Chunk} ->
+            Events = parse_sse_events(Chunk),
+            Acc ++ Events;
+        {error, _} ->
+            Acc
+    end.
+
+parse_sse_events(Chunk) ->
+    Blocks = binary:split(Chunk, <<"\n\n">>, [global, trim_all]),
+    lists:filtermap(fun(Block) ->
+        Lines = binary:split(Block, <<"\n">>, [global]),
+        EventType = find_sse_field(<<"event: ">>, Lines),
+        Data = find_sse_field(<<"data: ">>, Lines),
+        case {EventType, Data} of
+            {undefined, undefined} -> false;
+            {undefined, D} -> {true, {<<"data">>, D}};
+            {E, D} -> {true, {E, D}}
+        end
+    end, Blocks).
+
+find_sse_field(Prefix, Lines) ->
+    PLen = byte_size(Prefix),
+    case lists:filtermap(fun(Line) ->
+        case Line of
+            <<Prefix:PLen/binary, Rest/binary>> -> {true, Rest};
+            _ -> false
+        end
+    end, Lines) of
+        [Value | _] -> Value;
+        [] -> undefined
+    end.
+
+%%====================================================================
+%% Engine Helpers
+%%====================================================================
+
+%% @doc Find the GPU monitor pid from the engine supervisor's children.
+find_gpu_monitor(EngineId) ->
+    SupName = loom_engine_sup:sup_name(EngineId),
+    Children = supervisor:which_children(SupName),
+    case [Pid || {{gpu_monitor, _GpuId}, Pid, worker, _} <- Children, is_pid(Pid)] of
+        [MonitorPid | _] -> MonitorPid;
+        [] -> ct:fail("No GPU monitor found in engine supervisor")
+    end.
+
+%% @doc Get the machine's total RAM in GB via sysctl.
+get_machine_ram_gb() ->
+    RamBytes = list_to_integer(string:trim(os:cmd("sysctl -n hw.memsize"))),
+    RamBytes / (1024 * 1024 * 1024).
+
+%% @doc Find the coordinator pid from the engine supervisor.
+find_coordinator(EngineId) ->
+    SupName = loom_engine_sup:sup_name(EngineId),
+    Children = supervisor:which_children(SupName),
+    case lists:keyfind(coordinator, 1, Children) of
+        {coordinator, Pid, worker, _} when is_pid(Pid) -> Pid;
+        _ -> ct:fail("coordinator not found in supervisor")
+    end.
+
+%% @doc Find the loom_port pid from the coordinator's links.
+find_port_pid(CoordPid, EngineId) ->
+    SupPid = whereis(loom_engine_sup:sup_name(EngineId)),
+    {links, Links} = process_info(CoordPid, links),
+    PortPids = [P || P <- Links, is_pid(P), P =/= SupPid],
+    case PortPids of
+        [PortPid | _] -> PortPid;
+        [] -> undefined
+    end.
+
+%% @doc Get the OS PID of the adapter process.
+get_adapter_os_pid(CoordPid, EngineId) ->
+    PortPid = find_port_pid(CoordPid, EngineId),
+    ?assert(is_pid(PortPid)),
+    OsPid = loom_port:get_os_pid(PortPid),
+    ?assert(is_integer(OsPid)),
+    OsPid.
+
+%% @doc Poll until status is NOT the given value (or timeout).
+wait_status_not(EngineId, Status, Timeout) when Timeout > 0 ->
+    Result = try loom_engine_coordinator:get_status(EngineId)
+             catch _:_ -> {ets_or_proc_unavailable}
+             end,
+    case Result of
+        Status ->
+            timer:sleep(50),
+            wait_status_not(EngineId, Status, Timeout - 50);
+        _ ->
+            ok
+    end;
+wait_status_not(_EngineId, _Status, _Timeout) ->
+    ok.
