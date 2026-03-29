@@ -81,6 +81,26 @@ check_thresholds_no_threshold_defined_test() ->
     Results = loom_bench_stats:check_thresholds([{some_benchmark, Stats}], Thresholds),
     ?assertMatch([{some_benchmark, pass, []}], Results).
 
+check_thresholds_boundary_exact_equals_limit_test() ->
+    %% Actual == Limit should be a failure (threshold is exclusive)
+    Stats = #{p50 => 1000, p99 => 2000, min => 100, max => 3000,
+              mean => 1000.0, p80 => 1200, p95 => 1800, samples => 100},
+    Thresholds = #{health_roundtrip => #{p50 => 1000}},
+    Results = loom_bench_stats:check_thresholds([{health_roundtrip, Stats}], Thresholds),
+    [{health_roundtrip, fail, Violations}] = Results,
+    ?assertEqual(1, length(Violations)),
+    ?assert(lists:any(fun({p50, 1000, 1000}) -> true; (_) -> false end, Violations)).
+
+check_thresholds_multiple_benchmarks_mixed_test() ->
+    Stats1 = #{p50 => 500, p99 => 1500, min => 100, max => 2000,
+               mean => 600.0, p80 => 800, p95 => 1200, samples => 100},
+    Stats2 = #{p50 => 1500, p99 => 3000, min => 100, max => 4000,
+               mean => 1800.0, p80 => 2000, p95 => 2500, samples => 100},
+    Thresholds = #{bench_a => #{p50 => 1000}, bench_b => #{p50 => 1000}},
+    Results = loom_bench_stats:check_thresholds(
+        [{bench_a, Stats1}, {bench_b, Stats2}], Thresholds),
+    ?assertMatch([{bench_a, pass, []}, {bench_b, fail, _}], Results).
+
 %%--------------------------------------------------------------------
 %% to_json/2 tests
 %%--------------------------------------------------------------------
@@ -144,3 +164,11 @@ format_duration_milliseconds_test() ->
     ?assertEqual("1.0ms", lists:flatten(loom_bench_stats:format_duration(1000))),
     ?assertEqual("1.2ms", lists:flatten(loom_bench_stats:format_duration(1200))),
     ?assertEqual("4.1ms", lists:flatten(loom_bench_stats:format_duration(4100))).
+
+format_duration_zero_test() ->
+    ?assertEqual("0us", lists:flatten(loom_bench_stats:format_duration(0))).
+
+format_duration_float_below_1000_test() ->
+    %% Float inputs below 1000 should round to nearest integer
+    ?assertEqual("481us", lists:flatten(loom_bench_stats:format_duration(480.5))),
+    ?assertEqual("1us", lists:flatten(loom_bench_stats:format_duration(0.8))).

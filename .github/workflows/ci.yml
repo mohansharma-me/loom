@@ -142,10 +142,11 @@ jobs:
         run: rebar3 ct --dir test/bench --suite loom_bench_SUITE
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: bench-results
           path: _build/bench/results.json
+          if-no-files-found: warn
         if: always()
 
   docker:

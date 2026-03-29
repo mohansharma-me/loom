@@ -1,5 +1,9 @@
 %%%-------------------------------------------------------------------
-%%% @doc Benchmark suite for measuring Port communication overhead.
+%%% @doc Benchmark suite for Loom inference pipeline components.
+%%%
+%%% Measures protocol encode/decode, Port communication roundtrips,
+%%% coordinator operations, concurrent request handling, and large
+%%% message throughput.
 %%%
 %%% Run: rebar3 ct --dir test/bench --suite loom_bench_SUITE
 %%% Strict: BENCH_STRICT=true rebar3 ct --dir test/bench --suite loom_bench_SUITE
@@ -66,7 +70,11 @@
     <<"{\"type\":\"token\",\"id\":\"bench\",\"token_id\":1,"
       "\"text\":\"hello\",\"finished\":false}">>).
 
-%% Threshold map: benchmark_name => #{metric => max_microseconds}.
+%% ASSUMPTION: Mock adapter produces this many tokens per generate request.
+-define(MOCK_TOKENS_PER_REQUEST, 5).
+
+%% Threshold map: benchmark_name => #{metric => limit_microseconds}.
+%% A metric fails if actual >= limit (strict-less-than to pass).
 -define(THRESHOLDS, #{
     health_roundtrip => #{p50 => 1000, p99 => 2000},
     token_overhead => #{p50 => 500},
@@ -116,8 +124,8 @@ init_per_suite(Config) ->
     ok = loom_config:load(fixture_path("minimal.json")),
     {ok, _} = application:ensure_all_started(loom),
     %% ASSUMPTION: Each CT callback (init_per_suite, test cases, end_per_suite)
-    %% runs in a SEPARATE OS process in Common Test. A named_table ETS table is
-    %% owned by its creating process and is destroyed when that process exits.
+    %% runs in a separate Erlang process in Common Test. A named_table ETS table
+    %% is owned by its creating process and is destroyed when that process exits.
     %% To keep the table alive across all callbacks we spawn a dedicated keeper
     %% process that owns the table and stays alive until end_per_suite sends it
     %% a stop message.
@@ -154,11 +162,12 @@ end_per_suite(Config) ->
     JsonBin = loom_bench_stats:to_json(Results,
         #{strict_mode => StrictMode, thresholds => ?THRESHOLDS}),
     %% ASSUMPTION: ?FILE resolves to test/bench/loom_bench_SUITE.erl so the
-    %% project root is two dirname calls up, giving an absolute path that is
-    %% CWD-independent (CT changes CWD during end_per_suite).
+    %% project root is three dirname calls away (file -> bench -> test -> root),
+    %% giving an absolute path that is CWD-independent (CT changes CWD during
+    %% end_per_suite).
     ProjectRoot = filename:dirname(filename:dirname(filename:dirname(?FILE))),
     ResultsDir = filename:join([ProjectRoot, "_build", "bench"]),
-    filelib:ensure_dir(filename:join(ResultsDir, "dummy")),
+    ok = filelib:ensure_dir(filename:join(ResultsDir, "dummy")),
     ResultsFile = filename:join(ResultsDir, "results.json"),
     ok = file:write_file(ResultsFile, JsonBin),
     ct:pal("Results written to ~s", [ResultsFile]),
@@ -214,8 +223,7 @@ init_per_group(Group, Config) when Group =:= coordinator;
     CoordConfig = #{
         engine_id => EngineId,
         command => python_cmd(),
-        args => [mock_adapter_path(), "--token-delay", "0",
-                 "--startup-delay", "0", "--heartbeat-interval", "5"],
+        args => mock_adapter_args(),
         model => <<"mock">>,
         backend => <<"mock">>,
         startup_timeout_ms => 10000,
@@ -315,13 +323,11 @@ token_overhead(Config) ->
     Keeper = ?config(port_keeper, Config),
     %% Register this test process as the current receiver for port messages.
     Keeper ! {register, self()},
-    %% ASSUMPTION: Mock adapter produces 5 tokens per generate request.
-    TokensPerRequest = 5,
     AllSamples = lists:flatmap(fun(I) ->
         Id = integer_to_binary(I),
         ok = loom_port:send(PortPid,
             {generate, Id, <<"bench prompt">>, #{max_tokens => 100}}),
-        TokenTimestamps = collect_port_token_timestamps(PortRef, Id, TokensPerRequest),
+        TokenTimestamps = collect_port_token_timestamps(PortRef, Id, ?MOCK_TOKENS_PER_REQUEST),
         %% Wait for done message
         receive
             {loom_port_msg, PortRef, {done, Id, _, _}} -> ok
@@ -347,19 +353,8 @@ coordinator_ets_read(Config) ->
 
 coordinator_generate(Config) ->
     CoordPid = ?config(coord_pid, Config),
-    %% ASSUMPTION: Mock adapter produces 5 tokens per generate request.
-    TokensPerRequest = 5,
     Samples = lists:map(fun(_) ->
-        T0 = erlang:monotonic_time(microsecond),
-        {ok, ReqId} = loom_engine_coordinator:generate(
-            CoordPid, <<"bench prompt">>, #{max_tokens => 100}),
-        collect_coordinator_tokens(ReqId, TokensPerRequest),
-        receive
-            {loom_done, ReqId, _Stats} ->
-                erlang:monotonic_time(microsecond) - T0
-        after 5000 ->
-            ct:fail(coordinator_done_timeout)
-        end
+        timed_coordinator_generate(CoordPid, <<"bench prompt">>, #{max_tokens => 100}, 5000)
     end, lists:seq(1, 500)),
     store_result(coordinator_generate, Samples).
 
@@ -368,12 +363,15 @@ coordinator_generate(Config) ->
 %%====================================================================
 
 concurrent_10(Config) ->
+    %% 10 workers x 100 rounds = 1000 total requests
     run_concurrent_bench(10, 100, Config).
 
 concurrent_50(Config) ->
+    %% 50 workers x 50 rounds = 2500 total requests
     run_concurrent_bench(50, 50, Config).
 
 concurrent_100(Config) ->
+    %% 100 workers x 20 rounds = 2000 total requests
     run_concurrent_bench(100, 20, Config).
 
 %%====================================================================
@@ -381,12 +379,15 @@ concurrent_100(Config) ->
 %%====================================================================
 
 large_4k(Config) ->
+    %% 4KB prompt, 200 iterations (more iterations for smaller messages)
     run_large_message_bench(large_4k, 4096, 200, Config).
 
 large_16k(Config) ->
+    %% 16KB prompt, 100 iterations
     run_large_message_bench(large_16k, 16384, 100, Config).
 
 large_64k(Config) ->
+    %% 64KB prompt, 50 iterations (fewer iterations for larger messages)
     run_large_message_bench(large_64k, 65536, 50, Config).
 
 %%====================================================================
@@ -394,23 +395,11 @@ large_64k(Config) ->
 %%====================================================================
 
 %% @doc Benchmark generate requests with a large prompt through the coordinator.
-%% ASSUMPTION: Mock adapter produces 5 tokens per generate request regardless
-%% of prompt size.
 run_large_message_bench(Name, PromptSize, Iterations, Config) ->
     CoordPid = ?config(coord_pid, Config),
-    TokensPerRequest = 5,
     Prompt = binary:copy(<<"x">>, PromptSize),
     Samples = lists:map(fun(_) ->
-        T0 = erlang:monotonic_time(microsecond),
-        {ok, ReqId} = loom_engine_coordinator:generate(
-            CoordPid, Prompt, #{max_tokens => 100}),
-        collect_coordinator_tokens(ReqId, TokensPerRequest),
-        receive
-            {loom_done, ReqId, _Stats} ->
-                erlang:monotonic_time(microsecond) - T0
-        after 10000 ->
-            ct:fail({large_msg_done_timeout, Name})
-        end
+        timed_coordinator_generate(CoordPid, Prompt, #{max_tokens => 100}, 10000)
     end, lists:seq(1, Iterations)),
     store_result(Name, Samples).
 
@@ -422,18 +411,43 @@ time_iterations(Fun, N) ->
         erlang:monotonic_time(microsecond) - T0
     end, lists:seq(1, N)).
 
+%% @doc Perform a single timed generate-collect-wait cycle through the coordinator.
+%% Returns the elapsed time in microseconds.
+timed_coordinator_generate(CoordPid, Prompt, Opts, Timeout) ->
+    T0 = erlang:monotonic_time(microsecond),
+    {ok, ReqId} = loom_engine_coordinator:generate(CoordPid, Prompt, Opts),
+    collect_coordinator_tokens(ReqId, ?MOCK_TOKENS_PER_REQUEST),
+    receive
+        {loom_done, ReqId, _Stats} ->
+            erlang:monotonic_time(microsecond) - T0
+    after Timeout ->
+        ct:fail({coordinator_done_timeout, ReqId})
+    end.
+
 %% @doc Store benchmark result in the shared ETS table.
 store_result(Name, Samples) ->
-    Stats = loom_bench_stats:calculate(Samples),
-    true = ets:insert(loom_bench_results, {Name, Stats}).
+    case loom_bench_stats:calculate(Samples) of
+        {error, empty_samples} ->
+            ct:fail({empty_samples, Name});
+        Stats when is_map(Stats) ->
+            true = ets:insert(loom_bench_results, {Name, Stats})
+    end.
 
 %% @doc Path to the mock adapter script.
 mock_adapter_path() ->
     filename:join([code:priv_dir(loom), "scripts", "mock_adapter.py"]).
 
+%% @doc Common arguments for the mock adapter (zero delays for benchmarking).
+mock_adapter_args() ->
+    [mock_adapter_path(), "--token-delay", "0",
+     "--startup-delay", "0", "--heartbeat-interval", "5"].
+
 %% @doc Python 3 executable path.
 python_cmd() ->
-    os:find_executable("python3").
+    case os:find_executable("python3") of
+        false -> ct:fail("python3 not found on PATH — required for benchmark suite");
+        Path -> Path
+    end.
 
 %% @doc Path to test fixture file.
 %% ASSUMPTION: ?FILE resolves to the absolute path of this source file at
@@ -445,11 +459,18 @@ fixture_path(Filename) ->
 
 %% @doc Poll coordinator status until ready or timeout.
 wait_coordinator_ready(EngineId, Timeout) when Timeout > 0 ->
-    case catch loom_engine_coordinator:get_status(EngineId) of
+    try loom_engine_coordinator:get_status(EngineId) of
         ready -> ok;
-        _ ->
+        _Other ->
             timer:sleep(50),
             wait_coordinator_ready(EngineId, Timeout - 50)
+    catch
+        exit:{noproc, _} ->
+            %% Coordinator not registered yet — retry
+            timer:sleep(50),
+            wait_coordinator_ready(EngineId, Timeout - 50);
+        Class:Reason:Stack ->
+            ct:fail({coordinator_status_error, Class, Reason, Stack})
     end;
 wait_coordinator_ready(EngineId, _Timeout) ->
     ct:fail({coordinator_ready_timeout, EngineId}).
@@ -506,11 +527,16 @@ coord_keeper(Caller, CoordConfig, EngineId) ->
     {ok, Pid} = loom_engine_coordinator:start_link(CoordConfig),
     wait_coordinator_ready(EngineId, 10000),
     Caller ! {coord_keeper_ready, self(), Pid},
-    receive stop -> ok end.
+    receive
+        stop -> ok;
+        {'EXIT', Pid, Reason} ->
+            ct:pal("[ERROR] coord_keeper: coordinator ~p exited: ~p",
+                   [Pid, Reason])
+    end.
 
 %% @doc Long-lived keeper process that owns loom_port across CT process boundaries.
 %%
-%% CT runs init_per_group, each test case, and end_per_group in separate OS
+%% CT runs init_per_group, each test case, and end_per_group in separate Erlang
 %% processes. loom_port monitors its owner and shuts down when the owner dies.
 %% This keeper stays alive for the entire group, forwarding port messages to
 %% whichever test case PID last sent {register, Pid}.
@@ -524,8 +550,7 @@ coord_keeper(Caller, CoordConfig, EngineId) ->
 port_owner_keeper(Caller) ->
     Opts = #{
         command => python_cmd(),
-        args => [mock_adapter_path(), "--token-delay", "0",
-                 "--startup-delay", "0", "--heartbeat-interval", "5"],
+        args => mock_adapter_args(),
         owner => self(),
         spawn_timeout_ms => 10000,
         heartbeat_timeout_ms => 15000,
@@ -549,8 +574,10 @@ port_owner_keeper_loop(Receiver) ->
         Msg when Receiver =/= undefined ->
             Receiver ! Msg,
             port_owner_keeper_loop(Receiver);
-        _Msg ->
-            %% No receiver registered yet — drop
+        Msg ->
+            %% No receiver registered yet — log and drop
+            ct:pal("[WARN] port_owner_keeper: dropping message with no receiver: ~p",
+                   [Msg]),
             port_owner_keeper_loop(Receiver)
     end.
 
@@ -592,10 +619,8 @@ inter_token_deltas(Timestamps) ->
 %% @doc Run N concurrent generate requests for Rounds rounds, collect
 %% per-request latency samples. Uses barrier sync so all workers start
 %% simultaneously.
-%% ASSUMPTION: Mock adapter produces 5 tokens per generate request.
 run_concurrent_bench(N, Rounds, Config) ->
     CoordPid = ?config(coord_pid, Config),
-    TokensPerRequest = 5,
     AllSamples = lists:flatmap(fun(_Round) ->
         BarrierRef = make_ref(),
         Parent = self(),
@@ -605,7 +630,7 @@ run_concurrent_bench(N, Rounds, Config) ->
             T0 = erlang:monotonic_time(microsecond),
             {ok, ReqId} = loom_engine_coordinator:generate(
                 CoordPid, <<"bench concurrent">>, #{max_tokens => 100}),
-            collect_coordinator_tokens(ReqId, TokensPerRequest),
+            collect_coordinator_tokens(ReqId, ?MOCK_TOKENS_PER_REQUEST),
             receive
                 {loom_done, ReqId, _Stats} ->
                     Elapsed = erlang:monotonic_time(microsecond) - T0,

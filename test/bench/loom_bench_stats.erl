@@ -35,11 +35,21 @@ calculate(Samples) ->
     }.
 
 %% @doc Check benchmark results against threshold map.
-%% Thresholds :: #{BenchmarkName => #{MetricName => MaxValueUs}}.
+%% Thresholds :: #{BenchmarkName => #{MetricName => LimitUs}}.
+%% A metric fails if Actual >= LimitUs (threshold is exclusive — actual must
+%% be strictly less than the limit to pass).
 %% Returns [{BenchmarkName, pass | fail, [{Metric, Actual, Limit}]}].
 -spec check_thresholds([{atom(), map()}], map()) ->
     [{atom(), pass | fail, [{atom(), number(), number()}]}].
 check_thresholds(Results, Thresholds) ->
+    ResultNames = [Name || {Name, _} <- Results],
+    ThresholdNames = maps:keys(Thresholds),
+    case ThresholdNames -- ResultNames of
+        [] -> ok;
+        Unmatched ->
+            logger:warning("Thresholds defined for unknown benchmarks: ~p",
+                           [Unmatched])
+    end,
     lists:map(fun({Name, Stats}) ->
         case maps:get(Name, Thresholds, undefined) of
             undefined ->
@@ -65,8 +75,10 @@ check_thresholds(Results, Thresholds) ->
 to_json(Results, Opts) ->
     StrictMode = maps:get(strict_mode, Opts, false),
     Thresholds = maps:get(thresholds, Opts, #{}),
+    ThresholdResults = check_thresholds(Results, Thresholds),
+    ThresholdMap = maps:from_list([{N, S =:= pass} || {N, S, _} <- ThresholdResults]),
     BenchMap = lists:foldl(fun({Name, Stats}, Acc) ->
-        ThresholdPass = check_single_threshold(Name, Stats, Thresholds),
+        ThresholdPass = maps:get(Name, ThresholdMap, true),
         Entry = #{
             min_us => maps:get(min, Stats),
             max_us => maps:get(max, Stats),
@@ -98,7 +110,7 @@ to_json(Results, Opts) ->
 format_table(Results) ->
     Header = io_lib:format(
         "~n============================================================~n"
-        "  Loom Port Benchmark Results~n"
+        "  Loom Benchmark Results~n"
         "============================================================~n"
         " ~-28s ~8s ~8s ~8s ~8s ~8s ~8s~n"
         " ~s~n",
@@ -119,8 +131,10 @@ format_table(Results) ->
         "============================================================~n", []),
     [Header, Rows, Footer].
 
-%% @doc Format a duration in microseconds as a human-readable string.
+%% @doc Format a duration in microseconds as a human-readable iolist.
 -spec format_duration(number()) -> iolist().
+format_duration(Us) when is_float(Us), Us < 1000 ->
+    io_lib:format("~Bus", [round(Us)]);
 format_duration(Us) when Us < 1000 ->
     io_lib:format("~Bus", [Us]);
 format_duration(Us) ->
@@ -137,13 +151,3 @@ percentile(Sorted, N, P) ->
     Index = erlang:ceil(N * P),
     lists:nth(Index, Sorted).
 
-%% @doc Check if a single benchmark passes its thresholds.
-check_single_threshold(Name, Stats, Thresholds) ->
-    case maps:get(Name, Thresholds, undefined) of
-        undefined -> true;
-        BenchThresholds ->
-            maps:fold(fun(Metric, Limit, Acc) ->
-                Actual = maps:get(Metric, Stats),
-                Acc andalso (Actual < Limit)
-            end, true, BenchThresholds)
-    end.

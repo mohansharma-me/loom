@@ -403,6 +403,80 @@ GPU math optimization   N/A (delegates) N/A (delegates)  Integrated   N/A (deleg
 
 ---
 
+## Benchmarks
+
+Loom includes a benchmark suite that measures the overhead the orchestration layer adds to inference operations. All benchmarks use a mock adapter with zero artificial delays, isolating pure Erlang/Port communication cost.
+
+### Running Benchmarks
+
+```bash
+# Standard run (thresholds produce warnings only)
+rebar3 ct --dir test/bench --suite loom_bench_SUITE
+
+# Strict mode (threshold violations fail the suite)
+BENCH_STRICT=true rebar3 ct --dir test/bench --suite loom_bench_SUITE
+```
+
+Results are written to `_build/bench/results.json` and printed as a console table.
+
+### Latest Results
+
+Measured on Apple M3 Pro, OTP 28, 2026-03-29.
+
+#### Protocol Encode/Decode
+
+Pure Erlang JSON encoding and decoding — no Port or process overhead.
+
+| Benchmark | p50 | p99 | Target (p50) | Margin |
+|-----------|-----|-----|--------------|--------|
+| encode_decode_health | 1μs | 5μs | <100μs | 100x |
+| encode_decode_generate | 1μs | 9μs | <100μs | 100x |
+| encode_large_4k | 4μs | 7μs | — | — |
+| encode_large_16k | 13μs | 17μs | — | — |
+| encode_large_64k | 48μs | 54μs | — | — |
+
+#### Port Roundtrips
+
+Full Erlang → Port → Python → Port → Erlang cycle.
+
+| Benchmark | p50 | p99 | Target (p50) | Margin |
+|-----------|-----|-----|--------------|--------|
+| health_roundtrip | 28μs | 64μs | <1ms | 35x |
+| token_overhead | 3μs | 16μs | <500μs | 166x |
+
+#### Coordinator Operations
+
+Full path through `loom_engine_coordinator` including ETS state management.
+
+| Benchmark | p50 | p99 | Target (p50) | Margin |
+|-----------|-----|-----|--------------|--------|
+| coordinator_ets_read | 1μs | 2μs | <50μs | 50x |
+| coordinator_generate | 54μs | 90μs | <500μs | 9x |
+
+#### Concurrent Requests
+
+Barrier-synced parallel workers measuring per-request latency under contention.
+
+| Benchmark | p50 | p99 | Target (p50) | Margin |
+|-----------|-----|-----|--------------|--------|
+| concurrent_10 | 246μs | 467μs | <2ms | 8x |
+| concurrent_50 | 1.2ms | 1.9ms | <5ms | 4x |
+| concurrent_100 | 3.1ms | 4.3ms | <10ms | 3x |
+
+#### Large Messages
+
+Coordinator generate with large prompts — measures serialization + Port overhead at scale.
+
+| Benchmark | p50 | p99 | Target (p50) | Margin |
+|-----------|-----|-----|--------------|--------|
+| large_4k | 66μs | 91μs | <1ms | 15x |
+| large_16k | 86μs | 114μs | <2ms | 23x |
+| large_64k | 235μs | 493μs | <5ms | 21x |
+
+All targets represent maximum acceptable orchestration overhead. The mock adapter isolates Loom's overhead from actual inference time — in production, these costs are negligible relative to GPU computation (typically 10-100ms+ per token).
+
+---
+
 ## The Name
 
 A loom beam is the roller in a weaving loom that holds the warp threads under tension. Loom holds inference engines under supervision, weaving multiple models, backends, and GPUs into a unified serving fabric — on BEAM.
