@@ -84,7 +84,18 @@ flatten_engine_config(EngineMap) ->
 
     AdapterPath = maps:get(adapter_cmd, EngineMap),
     Backend = maps:get(backend, EngineMap),
-    {Cmd, Args} = adapter_cmd_and_args(AdapterPath, Backend),
+    Model = maps:get(model, EngineMap),
+    {Cmd, BaseArgs} = adapter_cmd_and_args(AdapterPath, Backend),
+    %% Pass --model to the adapter so it knows which model to load.
+    %% ASSUMPTION: All Python adapters accept --model via argparse (defined
+    %% in loom_adapter_base.py). Custom adapters may not use --model.
+    Args = case Backend of
+        B when B =:= <<"vllm">>; B =:= <<"mlx">>;
+               B =:= <<"tensorrt">>; B =:= <<"mock">> ->
+            BaseArgs ++ ["--model", binary_to_list(Model)];
+        _ ->
+            BaseArgs
+    end,
 
     Base = #{
         engine_id => maps:get(engine_id, EngineMap),

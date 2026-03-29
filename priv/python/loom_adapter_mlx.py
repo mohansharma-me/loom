@@ -144,32 +144,30 @@ class MlxAdapter(LoomAdapterBase):
             params: Generation parameters dict.  Recognised keys:
                 max_tokens (int).
         """
-        # ASSUMPTION: mlx_lm imports are deferred to keep the module-level
-        # import graph clean.  mlx.core is needed to build the input_ids
-        # array and to call .item() on the output token tensor.
-        import mlx.core as mx  # noqa: PLC0415
-        from mlx_lm.utils import generate_step  # noqa: PLC0415
+        # ASSUMPTION: mlx_lm >= 0.29.0 provides stream_generate as the
+        # public API for token-by-token generation.  The older generate_step
+        # was removed in 0.29.x.
+        from mlx_lm import stream_generate  # noqa: PLC0415
 
         max_tokens = params.get("max_tokens", self.args.max_tokens)
         loop = asyncio.get_event_loop()
 
-        # Tokenize prompt synchronously (fast, no Metal ops).
-        # ASSUMPTION: tokenizer.encode() returns a Python list of int token IDs.
-        # We wrap it in mx.array for mlx_lm compatibility.
-        input_ids = mx.array(self.tokenizer.encode(prompt))
-
-        # Build the synchronous generator.  generate_step yields
-        # (token_tensor, logprobs) tuples; logprobs are not used here.
-        # ASSUMPTION: generate_step accepts (prompt_tokens, model) as positional
-        # args per the mlx-lm 0.20.x public API.
-        gen = generate_step(input_ids, self.model)
-
-        # Unique sentinel for generator exhaustion -- avoids confusing
-        # a legitimate None yield with end-of-generation.
-        _EXHAUSTED = object()
-
         start = time.monotonic()
         tokens_sent = 0
+
+        # ASSUMPTION: stream_generate is a synchronous generator that yields
+        # GenerationResponse objects with .text attribute (cumulative or delta
+        # depending on version).  We use it in a thread executor to avoid
+        # blocking the event loop during Metal forward passes.
+        gen = stream_generate(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            prompt=prompt,
+            max_tokens=max_tokens,
+        )
+
+        # Unique sentinel for generator exhaustion.
+        _EXHAUSTED = object()
 
         try:
             for _ in range(max_tokens):
@@ -181,8 +179,6 @@ class MlxAdapter(LoomAdapterBase):
 
                 # Advance the generator by one step in a thread executor so we
                 # don't block the event loop during the Metal forward pass.
-                # next(gen, _EXHAUSTED) returns _EXHAUSTED when generator is done
-                # (never raises StopIteration).
                 result = await loop.run_in_executor(
                     None, next, gen, _EXHAUSTED
                 )
@@ -190,27 +186,12 @@ class MlxAdapter(LoomAdapterBase):
                 if result is _EXHAUSTED:
                     break
 
-                token_tensor, _logprobs = result
+                # ASSUMPTION: GenerationResponse has a .text attribute containing
+                # the token text fragment for this step.
+                token_text = result.text
 
-                # ASSUMPTION: .item() converts the mlx scalar tensor to a Python int.
-                token_int = token_tensor.item()
-
-                # Check for EOS token.
-                # ASSUMPTION: tokenizer.eos_token_id may be None for models that
-                # do not define an EOS token; we only break when it is set.
-                if (
-                    self.tokenizer.eos_token_id is not None
-                    and token_int == self.tokenizer.eos_token_id
-                ):
-                    break
-
-                # Decode single token to text.
-                # ASSUMPTION: tokenizer.decode([token_int]) produces the text
-                # fragment for one token. skip_special_tokens=True avoids
-                # emitting BOS/EOS markers in the output stream.
-                token_text = self.tokenizer.decode(
-                    [token_int], skip_special_tokens=True
-                )
+                if not token_text:
+                    continue
 
                 tokens_sent += 1
                 self.send_token(
