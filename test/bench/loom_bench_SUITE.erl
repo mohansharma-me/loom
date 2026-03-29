@@ -364,17 +364,17 @@ coordinator_generate(Config) ->
     store_result(coordinator_generate, Samples).
 
 %%====================================================================
-%% Concurrent group benchmarks (placeholder — implemented in Task 8)
+%% Concurrent group benchmarks
 %%====================================================================
 
-concurrent_10(_Config) ->
-    store_result(concurrent_10, [0]).
+concurrent_10(Config) ->
+    run_concurrent_bench(10, 100, Config).
 
-concurrent_50(_Config) ->
-    store_result(concurrent_50, [0]).
+concurrent_50(Config) ->
+    run_concurrent_bench(50, 50, Config).
 
-concurrent_100(_Config) ->
-    store_result(concurrent_100, [0]).
+concurrent_100(Config) ->
+    run_concurrent_bench(100, 20, Config).
 
 %%====================================================================
 %% Large messages group benchmarks (placeholder — implemented in Task 9)
@@ -567,3 +567,43 @@ inter_token_deltas([_]) -> [];
 inter_token_deltas(Timestamps) ->
     Pairs = lists:zip(lists:droplast(Timestamps), tl(Timestamps)),
     [B - A || {A, B} <- Pairs].
+
+%% @doc Run N concurrent generate requests for Rounds rounds, collect
+%% per-request latency samples. Uses barrier sync so all workers start
+%% simultaneously.
+%% ASSUMPTION: Mock adapter produces 5 tokens per generate request.
+run_concurrent_bench(N, Rounds, Config) ->
+    CoordPid = ?config(coord_pid, Config),
+    TokensPerRequest = 5,
+    AllSamples = lists:flatmap(fun(_Round) ->
+        BarrierRef = make_ref(),
+        Parent = self(),
+        Workers = [spawn_link(fun() ->
+            %% Wait for barrier release
+            receive {go, BarrierRef} -> ok end,
+            T0 = erlang:monotonic_time(microsecond),
+            {ok, ReqId} = loom_engine_coordinator:generate(
+                CoordPid, <<"bench concurrent">>, #{max_tokens => 100}),
+            collect_coordinator_tokens(ReqId, TokensPerRequest),
+            receive
+                {loom_done, ReqId, _Stats} ->
+                    Elapsed = erlang:monotonic_time(microsecond) - T0,
+                    Parent ! {bench_done, self(), Elapsed}
+            after 30000 ->
+                Parent ! {bench_done, self(), timeout}
+            end
+        end) || _ <- lists:seq(1, N)],
+        %% Release all workers simultaneously
+        [W ! {go, BarrierRef} || W <- Workers],
+        %% Collect results
+        lists:map(fun(W) ->
+            receive
+                {bench_done, W, timeout} -> ct:fail({worker_timeout, W});
+                {bench_done, W, Elapsed} -> Elapsed
+            after 60000 ->
+                ct:fail({collect_timeout, W})
+            end
+        end, Workers)
+    end, lists:seq(1, Rounds)),
+    BenchName = list_to_atom("concurrent_" ++ integer_to_list(N)),
+    store_result(BenchName, AllSamples).
