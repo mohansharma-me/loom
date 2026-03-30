@@ -5,7 +5,7 @@ Wraps vLLM's AsyncLLMEngine to provide the Loom line-delimited JSON
 wire protocol.  Subclasses LoomAdapterBase and implements all five
 abstract methods using vLLM's native async API.
 
-Requirements: vllm>=0.6.0,<0.7.0  (see priv/python/requirements-vllm.txt)
+Requirements: vllm>=0.18.0  (see priv/python/requirements-vllm.txt)
 pynvml is installed transitively with vllm and used for GPU metrics.
 
 Wire protocol is handled entirely by LoomAdapterBase.  This file only
@@ -31,7 +31,7 @@ logger = logging.getLogger("loom_adapter")
 class VllmAdapter(LoomAdapterBase):
     """Loom adapter backed by vLLM AsyncLLMEngine.
 
-    Targets vLLM 0.6.x.  Heavy imports (vllm, pynvml) are deferred to
+    Targets vLLM 0.18+.  Heavy imports (vllm, pynvml) are deferred to
     load_model() so the first heartbeat reaches loom_port before any
     slow initialization begins.
     """
