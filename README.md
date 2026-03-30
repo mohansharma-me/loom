@@ -152,7 +152,7 @@ huggingface-cli download mlx-community/Qwen2.5-0.5B-Instruct-4bit
 **vLLM — Linux with NVIDIA/AMD/CPU**
 
 ```bash
-pip install "vllm>=0.6.0,<0.7.0"
+pip install "vllm>=0.18.0"
 huggingface-cli download Qwen/Qwen2.5-1.5B-Instruct
 ```
 
@@ -224,7 +224,7 @@ Recovery is automatic. The supervisor detects the crash via Port monitoring, res
 | Backend | Platform | Install | Config `"backend"` |
 |---------|----------|---------|-------------------|
 | **MLX** | macOS Apple Silicon | `pip3 install mlx-lm>=0.20.0 psutil` | `"mlx"` |
-| **vLLM** | Linux (NVIDIA/AMD/CPU) | `pip install "vllm>=0.6.0,<0.7.0"` | `"vllm"` |
+| **vLLM** | Linux (NVIDIA/AMD/CPU) | `pip install "vllm>=0.18.0"` | `"vllm"` |
 | **Mock** | Any (testing) | None | `"mock"` |
 
 Loom communicates with all backends over the same stdio JSON protocol — the Erlang side is completely agnostic to which engine is running.
